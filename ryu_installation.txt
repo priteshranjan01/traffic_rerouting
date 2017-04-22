@@ -6,6 +6,11 @@ sudo pip install --upgrade setuptools
 sudo pip install eventlet greenlet oslo.config webob==1.1.1
 easy_install routes 
 git clone git://github.com/osrg/ryu.git
+# Change LLDP destination MAC address, so that the LLDP packets are not consumed by
+# the hardware supporting GENI nodes.
+# Change this constant in ryu/ryu/lib/packet/lldp.py
+# LLDP_MAC_NEAREST_BRIDGE = 'ff:ff:ff:ff:ff:ff'
+
 cd ryu
 sudo python ./setup.py install
 pip install --upgrade webob

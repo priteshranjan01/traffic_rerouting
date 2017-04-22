@@ -1,3 +1,18 @@
+## ExoGENI TIPs
+### 1. If we give IP address while reserving the ExoGENI node then after the nodes boot up the interfaces can't be
+###    assigned new IP addresses. This is because ExoGENI nodes run a service called "neuca" that manage network
+###    interfaces on the nodes. Source. Section 5.3
+###    [http://groups.geni.net/geni/wiki/GENIExperimenter/Tutorials/jacks/GettingStarted_PartI/Procedure/Execute]
+###    Stop the neuca service and the the IP addresses can be assigned. do `sudo service neuca stop`
+
+### 2. If we don't give the IP addresses to the interfaces to the ExoGENI nodes then figuring out which interface is
+###    on which link won't be obvious. And if we have a network where multiple nodes have multiple connecting links
+###    then there will be a lot of permutations to try. A workaround is to give dummy static IP addresses while reserving
+###    resources, note the "link <-> IP address" pair and then when the systems boot up do an ifconfig to get IP address
+###    <-> interface pair. Using these two tuples we can figure link <-> interfaces pair.
+###    If we want to give new IP addresses then refer to TIP #1.
+
+
 ## Generic commands.
 
 ### Temporarily Assign Ip address to interfaces.

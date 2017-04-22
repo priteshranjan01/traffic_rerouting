@@ -1,4 +1,4 @@
-# Install OVS on the GENI Ubuntu 14.04 nodes. This can be used as the post boot script.
+# Install OVS on the ExoGENI Ubuntu 14.04 nodes. This can be used as the post boot script.
 sudo apt-get update
 cd
 mkdir openvswitch
