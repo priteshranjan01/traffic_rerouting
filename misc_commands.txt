@@ -1,0 +1,46 @@
+## Generic commands.
+
+### Temporarily Assign Ip address to interfaces.
+ifconfig <interface> <ip>/<netmask>
+
+### Stop the network-manager in order to be able to prevent it interfering when you assign ip addresses.
+service network-manager stop
+
+### To enable ip forwarding in linux, use the command. 
+### DO NOT FORGET TO DO THIS. OR ELSE YOU WILL SPEND SLEEP LESS NIGHTS DEBUGGING YOUR NETWORK.
+sudo sysctl -w net.ipv4.ip_forward=1
+
+### To add routing table entry use the command
+sudo route add -net <dest-network-address> netmask <netmask> gw <gateway>
+sudo route del -net <dest-network-address> netmask <netmask> 
+### NEVER ADD A DEFAULT ROUTE TO GENI NODEs. Default route is used for management access to the nodes.
+#### Anyways, to add default gateway use the command
+sudo route add default gw <gateway>
+
+
+## OVS-commands: 
+
+### Add bridge
+ovs-vsctl add-br br0
+
+### Add port
+ovs-vsctl add-port br0 eth1
+
+### Bridge can be given an IP address as any regular interface.
+ifocnfig br0 192.168.10.1/24
+
+### set-fail-mode at the OVS.
+#### Do normal switching when disconnected from controller.
+ovs-vsctl set-fail-mode br0 standalone
+
+#### Do nothing without a controller.
+ovs-vsctl set-fail-mode br0 secure 
+
+### Configure OF Version 14 on OVS switch.
+ovs-vsctl set bridge br0 protocols=OpenFlow14
+
+### Set controller information at the OpenVswitch.
+ovs-vsctl set-controller br0 tcp:192.168.20.1:6633
+
+### Delete controller from bridge 
+ovs-vsctl del-controller br0 
