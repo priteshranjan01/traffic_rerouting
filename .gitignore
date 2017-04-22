@@ -1,4 +1,6 @@
 # Byte-compiled / optimized / DLL files
+# priyal_topo.py
+# constants.py
 __pycache__/
 *.py[cod]
 *$py.class

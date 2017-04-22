@@ -1,0 +1,14 @@
+# Install RYU on the controller. GENI ubuntu 14.04 nodes.
+cd
+sudo apt-get update
+sudo apt-get install -y gcc make python-pip python-dev git
+sudo pip install --upgrade setuptools
+sudo pip install eventlet greenlet oslo.config webob==1.1.1
+easy_install routes 
+git clone git://github.com/osrg/ryu.git
+cd ryu
+sudo python ./setup.py install
+pip install --upgrade webob
+pip install tinyrpc
+pip install ovs
+pip install msgpack-python
