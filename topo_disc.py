@@ -28,14 +28,16 @@ class BaseNetwork(app_manager.RyuApp):
     """
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs ):
         """
         Initialize an empty dictionary to keep datapath objects.
         Start the network topology discovery routine to run at constant interval.
         Start the network traffic monitoring routine.
         """
+        super(BaseNetwork, self).__init__(*args, **kwargs)
         self.datapaths = {}
         self.discovery = hub.spawn(self._discover_topology)
+        self.name = "BaseNetwork"
 
     def _discover_topology(self):
         """
