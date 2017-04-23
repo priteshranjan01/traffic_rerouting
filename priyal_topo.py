@@ -27,8 +27,15 @@ from ryu.lib import hub
 
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
-import constants
 
+# Discover the topology every 5sec
+LATENCY_CALCULATION_PERIOD = 1
+COST_CALCULATION_PERIOD = 1
+TOPOLOGY_DISCOVERY_PERIOD = 10
+DISPLAY = True
+SHOWTOPOLOGY = True
+SHOWCOST = True
+SHOWLATENCY = False
 
 class DiscoverTopology(app_manager.RyuApp):
     """
