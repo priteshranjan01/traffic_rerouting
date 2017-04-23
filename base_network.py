@@ -24,6 +24,7 @@ from ryu.topology.api import get_switch, get_link
 
 
 TOPOLOGY_DISCOVERY_INTERVAL=20
+TRAFFIC_MONITOR_INTERVAL=10
 CONFIG_FILE="CONFIG.json"
 EGRESS="egress"
 INGRESS="ingress"
@@ -54,7 +55,6 @@ class BaseNetwork(app_manager.RyuApp):
         self._read_config_file(CONFIG_FILE)
         self.network = nx.Graph()  # Updated every time _discover is called.
         self.paths = {}  # (src, dst) -> path_list
-        self.discovery = hub.spawn(self._discover_topology)
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
@@ -70,17 +70,6 @@ class BaseNetwork(app_manager.RyuApp):
         print ("Egress datapaths:")
         for sw in self.egress:
             print (sw)
-
-    def _discover_topology(self):
-        """
-        This thread infinitely runs at a periodic interval 
-        :return: 
-        """
-        while True:
-            hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
-            self._discover()
-            self._run_dijkstra_shortest_path()
-            print (self.__str__())
 
     def _discover(self):
         nodes = get_switch(self)
@@ -135,6 +124,8 @@ class BaseNetwork(app_manager.RyuApp):
                 else:
                     print("Removed dpid {0}".format(datapath.id))
                 del self.datapaths[datapath.id]
+                # Remove from network graph also.
+                self.network.remove_node(datapath.id)
 
     def __str__(self):
         ret_str = "\nIngress Nodes:\n"
@@ -147,6 +138,9 @@ class BaseNetwork(app_manager.RyuApp):
         ret_str += "\n".join(["src={0}, dst={1}".format(x,y) for x,y in self.network.edges()])
         return ret_str
 
+    def _monitor_traffic(self):
+        pass
+
 
 class MplsNetwork(BaseNetwork):
     """
@@ -156,4 +150,17 @@ class MplsNetwork(BaseNetwork):
     """
     def __init__(self, *args, **kwargs):
         super(MplsNetwork, self).__init__(*args, **kwargs)
+        self.discovery = hub.spawn(self._discover_topology)
+
+    def _discover_topology(self, interval=TOPOLOGY_DISCOVERY_INTERVAL):
+        """
+        This thread infinitely runs at a periodic interval 
+        """
+        while True:
+            hub.sleep(interval)
+            self._discover()
+            self._run_dijkstra_shortest_path()
+            print (self.__str__())
+
+
 
