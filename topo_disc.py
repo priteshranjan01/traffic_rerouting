@@ -118,19 +118,42 @@ class BaseNetwork(app_manager.RyuApp):
         datapath = ev.datapath
         if ev.state == MAIN_DISPATCHER:
             if datapath.id in self.ingress:
-                print ("Ingress node dpid= {0} connected".format(hex(datapath.id)))
+                print ("Ingress node dpid= {0} connected".format(datapath.id))
             elif datapath.id in self.egress:
-                print("Egress node dpid= {0} connected".format(hex(datapath.id)))
+                print("Egress node dpid= {0} connected".format(datapath.id))
             else:
-                print("Added dpid {0}".format(hex(datapath.id)))
+                print("Added dpid {0}".format(datapath.id))
             self.datapaths[datapath.id] = datapath
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.datapaths:
                 if datapath.id in self.ingress:
-                    print("Ingress node dpid= {0} disconnected".format(hex(datapath.id)))
+                    print("Ingress node dpid= {0} disconnected".format(datapath.id))
                 elif datapath.id in self.egress:
-                    print ("Egress node dpid= {0} disconnected".format(hex(datapath.id)))
+                    print ("Egress node dpid= {0} disconnected".format(datapath.id))
                 else:
-                    print("Removed dpid {0}".format(hex(datapath.id)))
+                    print("Removed dpid {0}".format(datapath.id))
                 del self.datapaths[datapath.id]
+
+    def __str__(self):
+        ret_str = "\nIngress Nodes:\n"
+        ret_str += "\t".join([str(node) for node in self.ingress])
+        ret_str += "\nEgress Nodes:\n"
+        ret_str += "\t".join([str(node) for node in self.egress])
+        ret_str += "\nDatapaths: (int, hex) \n"
+        ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid)))
+                              for dpid in self.datapaths.keys()])
+        ret_str += "\nAdjacency list:\n"
+        ret_str += self.network.adjacency_list()
+        return ret_str
+
+
+class MplsNetwork(BaseNetwork):
+    """
+    Creates an MPLS network. At startup creates an LSP across the shortest 
+    path between ingress and egress routes. 
+    Analyses the network state and updates the LSPs as needed.
+    """
+    def __init__(self, *args, **kwargs):
+        super(MplsNetwork, self).__init__(*args, **kwargs)
+
