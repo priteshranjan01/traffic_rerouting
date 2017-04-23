@@ -58,15 +58,16 @@ class BaseNetwork(app_manager.RyuApp):
         with open(file_name) as config:
             config_data = json.load(config)
             self.node_count = config_data[NODE_CT]
-            self.ingress += config_data[INGRESS]
-            self.egress += config_data[EGRESS]
+            self.ingress = [int(x['id'],16) for x in config_data[INGRESS]]
+            self.egress = [int(x['id'], 16) for x in config_data[EGRESS]]
+
         print ("{0} Nodes".format(self.node_count))
         print ("Ingress datapaths:")
         for sw in self.ingress :
-            print sw.id
-        print "Egress datapaths:"
+            print (sw['id'])
+        print ("Egress datapaths:")
         for sw in self.egress:
-            print sw.id
+            print (sw['id'])
 
     def _discover_topology(self):
         """
