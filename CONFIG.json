@@ -1,15 +1,26 @@
 {
   "node_ct": 12,
-  "ingress":
-  [
+  "ingress": [
     {
-      "id": "00007287f30fe44e"
+      "dpid": "00007287f30fe44e",
+      "network": [
+        {
+          "address": "10.0.0.0",
+          "netmask": "255.255.255.0"
+        }
+      ]
     }
   ],
   "egress":
   [
     {
-      "id": "0000ee187600384a"
+      "dpid": "0000ee187600384a",
+      "network": [
+        {
+          "address": "10.0.1.0",
+          "netmask": "255.255.255.0"
+        }
+      ]
     }
   ]
 }
