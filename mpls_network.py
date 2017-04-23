@@ -24,7 +24,7 @@ class MplsNetwork(BaseNetwork):
         """
         while True:
             hub.sleep(interval)
-            self._discover_topology()
+            self._discover_()
             self._dijkstra_shortest_path()
             self.ct += 1
 

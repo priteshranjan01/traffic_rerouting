@@ -65,19 +65,20 @@ class BaseNetwork(app_manager.RyuApp):
     def _print_ingress_node(self):
         print ("Node Ct in {0} = {1} ".format(CONFIG_FILE, self.node_count))
         print ("Ingress datapaths:")
-        for dpid, net in self.ingress:
+        for dpid, net in self.ingress.items():
             print ("\nDPID = {0}".format(dpid))
             for n in net:
-                print ("address: {0}, netmask: {1}".format(n.address, n.netmask), end="\t")
+                print ("[address: {0}, netmask: {1}]".format(n.address, n.netmask), end="\t")
+        print()
 
     def _print_egress_node(self):
         print ("Egress datapaths:")
-        for dpid, net in self.egress:
+        for dpid, net in self.egress.items():
             print ("\nDPID = {0}".format(dpid))
             for n in net:
-                print ("address: {0}, netmask: {1}".format(n.address, n.netmask), end="\t")
+                print ("[address: {0}, netmask: {1}]".format(n.address, n.netmask), end="\t")
 
-    def _discover_topology(self):
+    def _discover_(self):
         nodes = get_switch(self)
         for node in nodes:
             if node.dp.id in self.datapaths:
@@ -121,7 +122,7 @@ class BaseNetwork(app_manager.RyuApp):
             elif datapath.id in self.egress:
                 print("Egress node dpid= {0} connected".format(datapath.id))
             else:
-                print("Added dpid {0}".format(datapath.id))
+                print("Core node dpid= {0} connected".format(datapath.id))
             self.datapaths[datapath.id] = datapath
 
         elif ev.state == DEAD_DISPATCHER:
@@ -131,7 +132,7 @@ class BaseNetwork(app_manager.RyuApp):
                 elif datapath.id in self.egress:
                     print ("Egress node dpid= {0} disconnected".format(datapath.id))
                 else:
-                    print("Removed dpid {0}".format(datapath.id))
+                    print("Core node dpid= {0} disconnected".format(datapath.id))
                 del self.datapaths[datapath.id]
                 # Remove from network graph also.
                 self.network.remove_node(datapath.id)
