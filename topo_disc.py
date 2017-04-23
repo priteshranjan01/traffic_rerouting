@@ -80,6 +80,7 @@ class BaseNetwork(app_manager.RyuApp):
             hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
             self._discover()
             self._run_dijkstra_shortest_path()
+            print (self.__str__())
 
     def _discover(self):
         nodes = get_switch(self)
@@ -138,13 +139,12 @@ class BaseNetwork(app_manager.RyuApp):
     def __str__(self):
         ret_str = "\nIngress Nodes:\n"
         ret_str += "\t".join([str(node) for node in self.ingress])
-        ret_str += "\nEgress Nodes:\n"
+        ret_str += "\n\nEgress Nodes:\n"
         ret_str += "\t".join([str(node) for node in self.egress])
-        ret_str += "\nDatapaths: (int, hex) \n"
-        ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid)))
-                              for dpid in self.datapaths.keys()])
-        ret_str += "\nAdjacency list:\n"
-        ret_str += self.network.adjacency_list()
+        ret_str += "\n\nDatapaths: int, \t\t hex \n\t"
+        ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid))) for dpid in self.datapaths.keys()])
+        ret_str += "\nEdge list:\n"
+        ret_str += "\n".join(["src={0}, dst={1}".format(x,y) for x,y in self.network.edges()])
         return ret_str
 
 
