@@ -15,6 +15,7 @@ from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 
+from ryu.lib import hub
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ipv4
@@ -49,6 +50,19 @@ class BaseNetwork(app_manager.RyuApp):
         self._read_config_file(CONFIG_FILE)
         self.network = nx.Graph()  # Updated every time _discover is called.
         self.paths = {}  # (src, dst) -> path_list
+        self.discovery = hub.spawn(self._discover_topology)
+
+
+    def _discover_topology(self):
+        """
+        This thread infinitely runs at a periodic interval 
+        :return: 
+        """
+        while True:
+            hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
+            self._discover_()
+            self._dijkstra_shortest_path()
+            print (self.__str__())
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
@@ -64,22 +78,25 @@ class BaseNetwork(app_manager.RyuApp):
 
     def _print_ingress_node(self):
         print ("Node Ct in {0} = {1} ".format(CONFIG_FILE, self.node_count))
-        print ("Ingress datapaths:")
+        print ("\nIngress datapaths:")
         for dpid, net in self.ingress.items():
-            print ("\nDPID = {0}".format(dpid))
+            print ("DPID = {0}".format(dpid))
             for n in net:
                 print ("[address: {0}, netmask: {1}]".format(n.address, n.netmask), end="\t")
         print()
 
     def _print_egress_node(self):
-        print ("Egress datapaths:")
+        print ("\nEgress datapaths:")
         for dpid, net in self.egress.items():
-            print ("\nDPID = {0}".format(dpid))
+            print ("DPID = {0}".format(dpid))
             for n in net:
                 print ("[address: {0}, netmask: {1}]".format(n.address, n.netmask), end="\t")
+        print ()
 
     def _discover_(self):
+        print ("Inside discovery")
         nodes = get_switch(self)
+        print (nodes)
         for node in nodes:
             if node.dp.id in self.datapaths:
                 self.network.add_node(node.dp.id)
@@ -87,18 +104,22 @@ class BaseNetwork(app_manager.RyuApp):
                 print ("WARNING: node={0} not in self.datapaths. SKIPPED".format(node.dp.id))
 
         links = get_link(self)
+        print (links)
         for link in links.keys():
             if link.src.dpid in self.datapaths and link.dst.dpid in self.datapaths:
                 self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1)
             else:
                 print ("WARNING: link.src={0} and link.dst={1} not in self.datapaths. SKIPPED".format(
                     link.src.dpid, link.dst.dpid))
+        #pdb.set_trace()
 
     def _dijkstra_shortest_path(self):
         """
         For each combination of Ingress and Egress nodes find the shortest path.
         :return: None
         """
+        #pdb.set_trace()
+        print ("Inside dijkstra")
         for src, dst in product(self.ingress.keys(), self.egress.keys()):
             self.paths[(src, dst)] = nx.dijkstra_path(self.network, src, dst)
         for key, value in self.paths.items():
@@ -109,7 +130,7 @@ class BaseNetwork(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
-    def _datapath_state_change_handler(self, ev):
+    def _base_network_change_handler(self, ev):
         """
         Add/Remove datapath objects to/from the datapath dictionary 
         Source: Adapted from Ryubook section 3.2
@@ -135,7 +156,10 @@ class BaseNetwork(app_manager.RyuApp):
                     print("Core node dpid= {0} disconnected".format(datapath.id))
                 del self.datapaths[datapath.id]
                 # Remove from network graph also.
-                self.network.remove_node(datapath.id)
+                try:
+                    self.network.remove_node(datapath.id)
+                except nx.exception.NetworkXError as ne:
+                    print ("Node {0} was not in the network graph".format(datapath.id))
 
     def __str__(self):
         ret_str = "\nIngress Nodes:\n"
