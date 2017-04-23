@@ -2,6 +2,7 @@ from __future__ import print_function
 
 import json
 import pdb
+from itertools import product
 
 import networkx as nx
 
@@ -48,26 +49,27 @@ class BaseNetwork(app_manager.RyuApp):
         self.name = "BaseNetwork"
         self.node_count = 0
         self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
-        self.ingress = []  # Read in from CONFIG_FILE
-        self.egress = []  # Read in from CONFIG_FILE
+        self.ingress = set()  # Read in from CONFIG_FILE
+        self.egress = set()  # Read in from CONFIG_FILE
         self._read_config_file(CONFIG_FILE)
         self.network = nx.Graph()  # Updated every time _discover is called.
+        self.paths = {}  # (src, dst) -> path_list
         self.discovery = hub.spawn(self._discover_topology)
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
             config_data = json.load(config)
             self.node_count = config_data[NODE_CT]
-            self.ingress = [int(x['id'],16) for x in config_data[INGRESS]]
-            self.egress = [int(x['id'], 16) for x in config_data[EGRESS]]
+            self.ingress = set([int(x['id'],16) for x in config_data[INGRESS]])
+            self.egress = set([int(x['id'], 16) for x in config_data[EGRESS]])
 
         print ("{0} Nodes".format(self.node_count))
         print ("Ingress datapaths:")
-        for sw in self.ingress :
-            print (sw['id'])
+        for sw in self.ingress:
+            print (sw)
         print ("Egress datapaths:")
         for sw in self.egress:
-            print (sw['id'])
+            print (sw)
 
     def _discover_topology(self):
         """
@@ -77,6 +79,7 @@ class BaseNetwork(app_manager.RyuApp):
         while True:
             hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
             self._discover()
+            self._run_dijkstra_shortest_path()
 
     def _discover(self):
         nodes = get_switch(self)
@@ -94,7 +97,15 @@ class BaseNetwork(app_manager.RyuApp):
                 print ("WARNING: link.src={0} and link.dst={1} not in self.datapaths. SKIPPED".format(
                     link.src.dpid, link.dst.dpid))
 
-        pdb.set_trace()
+    def _run_dijkstra_shortest_path(self):
+        """
+        For each combination of Ingress and Egress nodes find the shortest path.
+        :return: None
+        """
+        for src, dst in product(self.ingress, self.egress):
+            self.paths[(src, dst)] = nx.dijkstra_path(self.network, src, dst)
+        for key, value in self.paths.items():
+            print ("{0}  \t\t\t {1}".format(key, value))
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
