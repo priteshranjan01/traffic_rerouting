@@ -1,5 +1,9 @@
 from __future__ import print_function
+
+import json
 import pdb
+
+import networkx as nx
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
@@ -18,7 +22,13 @@ from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 
-TOPOLOGY_DISCOVERY_INTERVAL=50
+TOPOLOGY_DISCOVERY_INTERVAL=20
+CONFIG_FILE="CONFIG.json"
+EGRESS="egress"
+INGRESS="ingress"
+NODE_CT="node_ct"
+WEIGHT="weight"
+
 
 class BaseNetwork(app_manager.RyuApp):
     """
@@ -35,9 +45,28 @@ class BaseNetwork(app_manager.RyuApp):
         Start the network traffic monitoring routine.
         """
         super(BaseNetwork, self).__init__(*args, **kwargs)
-        self.datapaths = {}
-        self.discovery = hub.spawn(self._discover_topology)
         self.name = "BaseNetwork"
+        self.node_count = 0
+        self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
+        self.ingress = []  # Read in from CONFIG_FILE
+        self.egress = []  # Read in from CONFIG_FILE
+        self._read_config_file(CONFIG_FILE)
+        self.network = nx.Graph()  # Updated every time _discover is called.
+        self.discovery = hub.spawn(self._discover_topology)
+
+    def _read_config_file(self, file_name=CONFIG_FILE):
+        with open(file_name) as config:
+            config_data = json.load(config)
+            self.node_count = config_data[NODE_CT]
+            self.ingress += config_data[INGRESS]
+            self.egress += config_data[EGRESS]
+        print ("{0} Nodes".format(self.node_count))
+        print ("Ingress datapaths:")
+        for sw in self.ingress :
+            print sw.id
+        print "Egress datapaths:"
+        for sw in self.egress:
+            print sw.id
 
     def _discover_topology(self):
         """
@@ -50,7 +79,20 @@ class BaseNetwork(app_manager.RyuApp):
 
     def _discover(self):
         nodes = get_switch(self)
+        for node in nodes:
+            if node.dp.id in self.datapaths:
+                self.network.add_node(node.dp.id)
+            else:
+                print ("WARNING: node={0} not in self.datapaths. SKIPPED".format(node.dp.id))
+
         links = get_link(self)
+        for link in links.keys():
+            if link.src.dpid in self.datapaths and link.dst.dpid in self.datapaths:
+                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1)
+            else:
+                print ("WARNING: link.src={0} and link.dst={1} not in self.datapaths. SKIPPED".format(
+                    link.src.dpid, link.dst.dpid))
+
         pdb.set_trace()
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
@@ -60,13 +102,23 @@ class BaseNetwork(app_manager.RyuApp):
         Add/Remove datapath objects to/from the datapath dictionary 
         Source: Adapted from Ryubook section 3.2
         """
-        pdb.set_trace()
+        # pdb.set_trace()
         datapath = ev.datapath
         if ev.state == MAIN_DISPATCHER:
+            if datapath.id in self.ingress:
+                print ("Ingress node dpid= {0} connected".format(hex(datapath.id)))
+            elif datapath.id in self.egress:
+                print("Egress node dpid= {0} connected".format(hex(datapath.id)))
+            else:
+                print("Added dpid {0}".format(hex(datapath.id)))
             self.datapaths[datapath.id] = datapath
-            print ("Added dpid {0}".format(hex(datapath.id)))
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.datapaths:
+                if datapath.id in self.ingress:
+                    print("Ingress node dpid= {0} disconnected".format(hex(datapath.id)))
+                elif datapath.id in self.egress:
+                    print ("Egress node dpid= {0} disconnected".format(hex(datapath.id)))
+                else:
+                    print("Removed dpid {0}".format(hex(datapath.id)))
                 del self.datapaths[datapath.id]
-                print ("Removed dpid {0}".format(hex(datapath.id)))
