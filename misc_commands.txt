@@ -12,6 +12,15 @@
 ###    <-> interface pair. Using these two tuples we can figure link <-> interfaces pair.
 ###    If we want to give new IP addresses then refer to TIP #1.
 
+## Wireshark version 2.2.0
+#### sudo add-apt-repository ppa:wireshark-dev/stable
+#### sudo apt-get update
+#### sudo apt-get install wireshark
+
+## TCP-DUMP (because sometimes Wireshark is not an option)
+Quick cheat-sheet: https://danielmiessler.com/study/tcpdump/
+tcpdump -i eth1  # Listen for all packets on interface eth1
+
 
 ## Generic commands.
 

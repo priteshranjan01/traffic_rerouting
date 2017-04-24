@@ -52,7 +52,6 @@ class BaseNetwork(app_manager.RyuApp):
         self.paths = {}  # (src, dst) -> path_list
         self.discovery = hub.spawn(self._discover_topology)
 
-
     def _discover_topology(self):
         """
         This thread infinitely runs at a periodic interval 
@@ -63,6 +62,7 @@ class BaseNetwork(app_manager.RyuApp):
             self._discover_()
             self._dijkstra_shortest_path()
             print (self.__str__())
+            self._create_proactive_lsp()
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
@@ -96,7 +96,7 @@ class BaseNetwork(app_manager.RyuApp):
     def _discover_(self):
         print ("Inside discovery")
         nodes = get_switch(self)
-        print (nodes)
+        #print (nodes)
         for node in nodes:
             if node.dp.id in self.datapaths:
                 self.network.add_node(node.dp.id)
@@ -104,10 +104,10 @@ class BaseNetwork(app_manager.RyuApp):
                 print ("WARNING: node={0} not in self.datapaths. SKIPPED".format(node.dp.id))
 
         links = get_link(self)
-        print (links)
+        #print (links)
         for link in links.keys():
             if link.src.dpid in self.datapaths and link.dst.dpid in self.datapaths:
-                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1)
+                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1, src_port=link.src.port_no, out_port=link.dst.port_no)
             else:
                 print ("WARNING: link.src={0} and link.dst={1} not in self.datapaths. SKIPPED".format(
                     link.src.dpid, link.dst.dpid))
@@ -169,5 +169,30 @@ class BaseNetwork(app_manager.RyuApp):
         ret_str += "\n\nDatapaths: int, \t\t hex \n\t"
         ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid))) for dpid in self.datapaths.keys()])
         ret_str += "\nEdge list:\n"
-        ret_str += "\n".join(["src={0}, dst={1}".format(x,y) for x,y in self.network.edges()])
+        ret_str += "\n".join(["src={0}, {1}, dst={2}, {3}".format(
+            x,self.network[x][y]['src_port'],y, self.network[x][y]['dst_port']) for x,y in self.network.edges()])
         return ret_str
+
+    def _create_proactive_lsp(self):
+        """
+        For each (src, dst) in self.paths
+            Take a label Li
+            At src:
+                match= src, dst
+                action = Push MPLS label Li, Output <port ?>
+            At dest:
+                match= MPLS label li, 
+                action: Pop MPLS, output <port ?>
+            At core nodes:
+                match= MPLS label Li,
+                action: output <prt ?>
+        """
+        pdb.set_trace()
+
+    def _get_out_port(self, src_id, dst_id):
+        pass
+
+    def _add_rule(self, datapath, ):
+        """
+        
+        """

@@ -8,7 +8,7 @@ EGRESS = "egress"
 INGRESS = "ingress"
 NODE_CT = "node_ct"
 DPID = "dpid"
-NETWORK = "network"
+NETWORK = "host"
 ADDRESS = "address"
 NETMASK = "netmask"
 
