@@ -1,6 +1,7 @@
 {
   "node_ct": 12,
-  "ingress": [
+  "edges":
+  [
     {
       "dpid": "0000a64cef8a724d",
       "host": [
@@ -10,10 +11,7 @@
           "port": 3
         }
       ]
-    }
-  ],
-  "egress":
-  [
+    },
     {
       "dpid": "0000ee187600384a",
       "host": [

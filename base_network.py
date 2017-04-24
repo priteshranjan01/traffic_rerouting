@@ -25,7 +25,7 @@ from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 network_ = namedtuple("network", "address, netmask, port")
-
+lsp = namedtuple("label_switch_path", "label, path")
 
 class BaseNetwork(app_manager.RyuApp):
     """
@@ -44,12 +44,14 @@ class BaseNetwork(app_manager.RyuApp):
         super(BaseNetwork, self).__init__(*args, **kwargs)
         self.name = "BaseNetwork"
         self.node_count = 0
+        self.lsp_count = 0
         self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
-        self.ingress = {}  # Read in from CONFIG_FILE
-        self.egress = {}  # Read in from CONFIG_FILE
+        self.lers = {}  # Label Edge Routers: (dpid) -> [(address, netmask, port)]
         self._read_config_file(CONFIG_FILE)
-        self.network = nx.Graph()  # Updated every time _discover is called.
-        self.paths = {}  # (src, dst) -> path_list
+        self._initialize_empty_ingress_egress_path()
+        # Directed graph because We need 2 labels for To and Fro path.
+        self.network = nx.DiGraph()  # Updated every time _discover is called.
+        self.paths = {}  # (src, dst) -> [(label, path)]
         self.discovery = hub.spawn(self._discover_topology)
 
     def _discover_topology(self):
@@ -68,30 +70,25 @@ class BaseNetwork(app_manager.RyuApp):
         with open(file_name) as config:
             data = json.load(config)
             self.node_count = data[NODE_CT]
-            for datapath in data[INGRESS]:
-                self.ingress[int(datapath[DPID],16)] = [network_(net[ADDRESS], net[NETMASK], net[PORT])for net in datapath[NETWORK]]
+            for datapath in data[LER]:
+                self.lers[int(datapath[DPID],16)] = [network_(net[ADDRESS], net[NETMASK], net[PORT])for net in datapath[NETWORK]]
 
-            for datapath in data[EGRESS]:
-                self.egress[int(datapath[DPID], 16)] = [network_(net[ADDRESS], net[NETMASK], net[PORT]) for net in datapath[NETWORK]]
-        self._print_ingress_node()
-        self._print_egress_node()
+        self._print_edge_nodes()
 
-    def _print_ingress_node(self):
+    def _initialize_empty_ingress_egress_path(self):
+        for src, dst in product(self.lers.keys(), self.lers.keys()):
+            if src != dst:
+                self.paths[(src, dst)] = []
+
+
+    def _print_edge_nodes(self):
         print ("Node Ct in {0} = {1} ".format(CONFIG_FILE, self.node_count))
-        print ("\nIngress datapaths:")
-        for dpid, net in self.ingress.items():
+        print ("\nLabel Edge datapaths:")
+        for dpid, net in self.lers.items():
             print ("DPID = {0}".format(dpid))
             for n in net:
                 print ("[address: {0}, netmask: {1}, port={2}]".format(n.address, n.netmask, n.port), end="\t")
         print()
-
-    def _print_egress_node(self):
-        print ("\nEgress datapaths:")
-        for dpid, net in self.egress.items():
-            print ("DPID = {0}".format(dpid))
-            for n in net:
-                print ("[address: {0}, netmask: {1}, port={2}]".format(n.address, n.netmask, n.port), end="\t")
-        print ()
 
     def _discover_(self):
         print ("Inside discovery")
@@ -120,8 +117,10 @@ class BaseNetwork(app_manager.RyuApp):
         """
         #pdb.set_trace()
         print ("Inside dijkstra")
-        for src, dst in product(self.ingress.keys(), self.egress.keys()):
-            self.paths[(src, dst)] = nx.dijkstra_path(self.network, src, dst)
+        for src, dst in product(self.lers.keys(), self.lers.keys()):
+            if src != dst:
+                self.lsp_count += 1
+                self.paths[(src, dst)].append(lsp(self.lsp_count, nx.dijkstra_path(self.network, src, dst)))
         for key, value in self.paths.items():
             print ("{0}  \t\t\t {1}".format(key, value))
 
@@ -140,7 +139,7 @@ class BaseNetwork(app_manager.RyuApp):
         datapath = ev.datapath  # Check this
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
-        match = parser.OFPMatch(eth_type=0x806)
+        match = parser.OFPMatch(eth_type=ARP)
         actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
         self.add_flow(datapath, 1, match, actions)
 
@@ -155,10 +154,8 @@ class BaseNetwork(app_manager.RyuApp):
         # pdb.set_trace()
         datapath = ev.datapath
         if ev.state == MAIN_DISPATCHER:
-            if datapath.id in self.ingress:
-                print ("Ingress node dpid= {0} connected".format(datapath.id))
-            elif datapath.id in self.egress:
-                print("Egress node dpid= {0} connected".format(datapath.id))
+            if datapath.id in self.lers:
+                print ("Edge node dpid= {0} connected".format(datapath.id))
             else:
                 print("Core node dpid= {0} connected".format(datapath.id))
             self.datapaths[datapath.id] = datapath
@@ -166,10 +163,8 @@ class BaseNetwork(app_manager.RyuApp):
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.datapaths:
-                if datapath.id in self.ingress:
-                    print("Ingress node dpid= {0} disconnected".format(datapath.id))
-                elif datapath.id in self.egress:
-                    print ("Egress node dpid= {0} disconnected".format(datapath.id))
+                if datapath.id in self.lers:
+                    print("Edge node dpid= {0} disconnected".format(datapath.id))
                 else:
                     print("Core node dpid= {0} disconnected".format(datapath.id))
                 del self.datapaths[datapath.id]
@@ -180,10 +175,8 @@ class BaseNetwork(app_manager.RyuApp):
                     print ("Node {0} was not in the network graph".format(datapath.id))
 
     def __str__(self):
-        ret_str = "\nIngress Nodes:\n"
-        ret_str += "\t".join([str(node) for node in self.ingress])
-        ret_str += "\n\nEgress Nodes:\n"
-        ret_str += "\t".join([str(node) for node in self.egress])
+        ret_str = "\nEdge Nodes:\n"
+        ret_str += "\t".join([str(node) for node in self.lers])
         ret_str += "\n\nDatapaths: int, \t\t hex \n\t"
         ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid))) for dpid in self.datapaths.keys()])
         ret_str += "\nEdge list:\n"
@@ -205,16 +198,52 @@ class BaseNetwork(app_manager.RyuApp):
                 match= MPLS label Li,
                 action: output <prt ?>
         """
-        for (src, dst), path in self.paths.items():
+        for (src, dst), lsps in self.paths.items():
             src_dp = self.datapaths[src]
             dst_dp = self.datapaths[dst]
+            # In path A-B-C-D, src will be A and dst will D
+            # For link A-B src_op_port is the port on A which connects to B
+            # ip_dst
+            for lsp in lsps:
+                path = lsp.path
+                label = lsp.label
+                # Set rule for ingress LER.
+                src_op_port = self.network[src][path[1]]['src_port']
+                # dst shall be D and src will
+                ip_dst = self.lers[dst][0][ADDRESS]  # TODO: change hardcoded index.
+                ip_src = self.lers[src][0][ADDRESS]
+                # Add a rule to push MPLS label on the incoming traffic.
+                parser = src_dp.ofproto_parser
+                match = parser.OFPMatch(eth_type=IP, ipv4_src=ip_src, ipv4_dst=ip_dst)
+                actions = [parser.OFPActionPushMpls(ethertype=MPLS),
+                           parser.OFPActionSetField(mpls_label=label),
+                           parser.OFPActionOutput(out_port=src_op_port)]
+                self.add_flow(src_dp, 10, match, actions)
+                print ("\nPushRule Added SUCCESS on DPID: {3}, \nMatch: Eth_type={0}, IP_src={1}, IP_dst={2}".format(IP, ip_src, ip_dst, src))
+                print ("Action: Push MPLS label= {0}, out_port={1}\n".format(label, src_op_port))
 
-        pdb.set_trace()
+                # Add rule to pop MPLS label at the Egress node.
+                dst_out_port = self.lers[dst][0][PORT]
+                parser = dst_dp.ofproto_parser
+                match = parser.OFPMatch(eth_type=MPLS, mpls_label=label)
+                actions = [parser.OFPActionPopMpls(ethertype=IP),
+                           parser.OFPActionOutput(out_port=dst_out_port)]
+                self.add_flow(dst_dp, 10, match, actions)
+                print ("\nPopRULE ADDED SUCCESS DPID: {0}, Match: Eth_type={1}, MPLS label={2}".format(dst, MPLS, label))
+                print ("Action: PoP MPLS label= {0}, out_port={1}\n".format(label, dst_out_port))
+
+                # Now add rules for the network nodes.
+                for i in range(1, len(path)-1):  # A-B-C-D-E-F. Add rules on B, C, D, E
+                    link_src = path[i]
+                    link_dst = path[i+1]
+                    out_port = self.network[link_src][link_dst]['src_port']
+                    link_src_dp = self.datapaths[link_src]
+                    parser = link_src_dp.ofproto_parser
+                    match = parser.OFPMatch(eth_type=MPLS, mpls_label=label)
+                    actions = [parser.OFPActionOutput(out_port=out_port)]
+                    self.add_flow(link_src_dp, 10, match, actions)
+                    print ("\nMatchRule added Success: {0}, MPLS label={1}".format(link_src, label))
+                    print ("Action: Out_port {0}".format(out_port))
 
     def _get_out_port(self, src_id, dst_id):
         pass
-
-    def _add_rule(self, datapath, ):
-        """
-        
-        """
