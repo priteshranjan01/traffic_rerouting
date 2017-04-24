@@ -25,7 +25,16 @@ from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 network_ = namedtuple("network", "address, netmask, port")
-lsp = namedtuple("label_switch_path", "label, path")
+
+
+class Lsp(object):
+    def __init__(self, label=None, path=None):
+        self.label = label
+        self.path = path
+
+    def __eq__(self, other):
+        return set(self.path) == set(other.path)
+
 
 class BaseNetwork(app_manager.RyuApp):
     """
@@ -48,10 +57,10 @@ class BaseNetwork(app_manager.RyuApp):
         self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
         self.lers = {}  # Label Edge Routers: (dpid) -> [(address, netmask, port)]
         self._read_config_file(CONFIG_FILE)
-        self._initialize_empty_ingress_egress_path()
         # Directed graph because We need 2 labels for To and Fro path.
         self.network = nx.DiGraph()  # Updated every time _discover is called.
         self.paths = {}  # (src, dst) -> [(label, path)]
+        self._initialize_empty_ingress_egress_path()
         self.discovery = hub.spawn(self._discover_topology)
 
     def _discover_topology(self):
@@ -64,7 +73,7 @@ class BaseNetwork(app_manager.RyuApp):
             self._discover_()
             self._dijkstra_shortest_path()
             print (self.__str__())
-            #self._create_proactive_lsp()
+            self._create_proactive_lsp()
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
@@ -79,7 +88,6 @@ class BaseNetwork(app_manager.RyuApp):
         for src, dst in product(self.lers.keys(), self.lers.keys()):
             if src != dst:
                 self.paths[(src, dst)] = []
-
 
     def _print_edge_nodes(self):
         print ("Node Ct in {0} = {1} ".format(CONFIG_FILE, self.node_count))
@@ -119,8 +127,15 @@ class BaseNetwork(app_manager.RyuApp):
         print ("Inside dijkstra")
         for src, dst in product(self.lers.keys(), self.lers.keys()):
             if src != dst:
-                self.lsp_count += 1
-                self.paths[(src, dst)].append(lsp(self.lsp_count, nx.dijkstra_path(self.network, src, dst)))
+                new_lsp = Lsp(self.lsp_count, nx.dijkstra_path(self.network, src, dst))
+                add_new_lsp = True
+                for _, _lsp in self.paths.items():
+                    if isinstance(_lsp, Lsp):
+                        if _lsp == new_lsp:
+                            add_new_lsp = False
+                if add_new_lsp:
+                    self.lsp_count += 1
+                    self.paths[(src, dst)].append(new_lsp)
         for key, value in self.paths.items():
             print ("{0}  \t\t\t {1}".format(key, value))
 
@@ -204,30 +219,30 @@ class BaseNetwork(app_manager.RyuApp):
             # In path A-B-C-D, src will be A and dst will D
             # For link A-B src_op_port is the port on A which connects to B
             # ip_dst
-            for lsp in lsps:
-                path = lsp.path
-                label = lsp.label
+            for _lsp in lsps:
+                path = _lsp.path
+                label = _lsp.label
                 # Set rule for ingress LER.
                 src_op_port = self.network[src][path[1]]['src_port']
                 # dst shall be D and src will
-                ip_dst = self.lers[dst][0][ADDRESS]  # TODO: change hardcoded index.
-                ip_src = self.lers[src][0][ADDRESS]
+                ip_dst = getattr(self.lers[dst][0], ADDRESS)  # TODO: change hardcoded index.
+                ip_src = getattr(self.lers[src][0], ADDRESS)
                 # Add a rule to push MPLS label on the incoming traffic.
                 parser = src_dp.ofproto_parser
                 match = parser.OFPMatch(eth_type=IP, ipv4_src=ip_src, ipv4_dst=ip_dst)
                 actions = [parser.OFPActionPushMpls(ethertype=MPLS),
                            parser.OFPActionSetField(mpls_label=label),
-                           parser.OFPActionOutput(out_port=src_op_port)]
+                           parser.OFPActionOutput(port=src_op_port)]
                 self.add_flow(src_dp, 10, match, actions)
                 print ("\nPushRule Added SUCCESS on DPID: {3}, \nMatch: Eth_type={0}, IP_src={1}, IP_dst={2}".format(IP, ip_src, ip_dst, src))
                 print ("Action: Push MPLS label= {0}, out_port={1}\n".format(label, src_op_port))
 
                 # Add rule to pop MPLS label at the Egress node.
-                dst_out_port = self.lers[dst][0][PORT]
+                dst_out_port = getattr(self.lers[dst][0],PORT)
                 parser = dst_dp.ofproto_parser
                 match = parser.OFPMatch(eth_type=MPLS, mpls_label=label)
                 actions = [parser.OFPActionPopMpls(ethertype=IP),
-                           parser.OFPActionOutput(out_port=dst_out_port)]
+                           parser.OFPActionOutput(port=dst_out_port)]
                 self.add_flow(dst_dp, 10, match, actions)
                 print ("\nPopRULE ADDED SUCCESS DPID: {0}, Match: Eth_type={1}, MPLS label={2}".format(dst, MPLS, label))
                 print ("Action: PoP MPLS label= {0}, out_port={1}\n".format(label, dst_out_port))
@@ -240,7 +255,7 @@ class BaseNetwork(app_manager.RyuApp):
                     link_src_dp = self.datapaths[link_src]
                     parser = link_src_dp.ofproto_parser
                     match = parser.OFPMatch(eth_type=MPLS, mpls_label=label)
-                    actions = [parser.OFPActionOutput(out_port=out_port)]
+                    actions = [parser.OFPActionOutput(port=out_port)]
                     self.add_flow(link_src_dp, 10, match, actions)
                     print ("\nMatchRule added Success: {0}, MPLS label={1}".format(link_src, label))
                     print ("Action: Out_port {0}".format(out_port))
