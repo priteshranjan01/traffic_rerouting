@@ -24,7 +24,7 @@ from ryu.lib.packet import arp
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
-network_ = namedtuple("network", "address, netmask")
+network_ = namedtuple("network", "address, netmask, port")
 
 
 class BaseNetwork(app_manager.RyuApp):
@@ -62,17 +62,17 @@ class BaseNetwork(app_manager.RyuApp):
             self._discover_()
             self._dijkstra_shortest_path()
             print (self.__str__())
-            self._create_proactive_lsp()
+            #self._create_proactive_lsp()
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
             data = json.load(config)
             self.node_count = data[NODE_CT]
             for datapath in data[INGRESS]:
-                self.ingress[int(datapath[DPID],16)] = [network_(net[ADDRESS], net[NETMASK])for net in datapath[NETWORK]]
+                self.ingress[int(datapath[DPID],16)] = [network_(net[ADDRESS], net[NETMASK], net[PORT])for net in datapath[NETWORK]]
 
             for datapath in data[EGRESS]:
-                self.egress[int(datapath[DPID], 16)] = [network_(net[ADDRESS], net[NETMASK]) for net in datapath[NETWORK]]
+                self.egress[int(datapath[DPID], 16)] = [network_(net[ADDRESS], net[NETMASK], net[PORT]) for net in datapath[NETWORK]]
         self._print_ingress_node()
         self._print_egress_node()
 
@@ -82,7 +82,7 @@ class BaseNetwork(app_manager.RyuApp):
         for dpid, net in self.ingress.items():
             print ("DPID = {0}".format(dpid))
             for n in net:
-                print ("[address: {0}, netmask: {1}]".format(n.address, n.netmask), end="\t")
+                print ("[address: {0}, netmask: {1}, port={2}]".format(n.address, n.netmask, n.port), end="\t")
         print()
 
     def _print_egress_node(self):
@@ -90,7 +90,7 @@ class BaseNetwork(app_manager.RyuApp):
         for dpid, net in self.egress.items():
             print ("DPID = {0}".format(dpid))
             for n in net:
-                print ("[address: {0}, netmask: {1}]".format(n.address, n.netmask), end="\t")
+                print ("[address: {0}, netmask: {1}, port={2}]".format(n.address, n.netmask, n.port), end="\t")
         print ()
 
     def _discover_(self):
@@ -107,7 +107,7 @@ class BaseNetwork(app_manager.RyuApp):
         #print (links)
         for link in links.keys():
             if link.src.dpid in self.datapaths and link.dst.dpid in self.datapaths:
-                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1, src_port=link.src.port_no, out_port=link.dst.port_no)
+                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1, src_port=link.src.port_no, dst_port=link.dst.port_no)
             else:
                 print ("WARNING: link.src={0} and link.dst={1} not in self.datapaths. SKIPPED".format(
                     link.src.dpid, link.dst.dpid))
@@ -128,6 +128,23 @@ class BaseNetwork(app_manager.RyuApp):
     def _monitor_traffic(self):
         pass
 
+    def add_flow(self, datapath, priority, match, actions):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTION, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match,
+                                instructions=inst)
+        datapath.send_msg(mod)
+
+    def add_arp_broadcast_rule(self,ev):
+        datapath = ev.datapath  # Check this
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        match = parser.OFPMatch(eth_type=0x806)
+        actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+        self.add_flow(datapath, 1, match, actions)
+
+
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _base_network_change_handler(self, ev):
@@ -145,6 +162,7 @@ class BaseNetwork(app_manager.RyuApp):
             else:
                 print("Core node dpid= {0} connected".format(datapath.id))
             self.datapaths[datapath.id] = datapath
+            self.add_arp_broadcast_rule(ev)
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.datapaths:
@@ -169,7 +187,7 @@ class BaseNetwork(app_manager.RyuApp):
         ret_str += "\n\nDatapaths: int, \t\t hex \n\t"
         ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid))) for dpid in self.datapaths.keys()])
         ret_str += "\nEdge list:\n"
-        ret_str += "\n".join(["src={0}, {1}, dst={2}, {3}".format(
+        ret_str += "\n".join(["(src={0}, {1}), (dst={2}, {3})".format(
             x,self.network[x][y]['src_port'],y, self.network[x][y]['dst_port']) for x,y in self.network.edges()])
         return ret_str
 
@@ -187,6 +205,10 @@ class BaseNetwork(app_manager.RyuApp):
                 match= MPLS label Li,
                 action: output <prt ?>
         """
+        for (src, dst), path in self.paths.items():
+            src_dp = self.datapaths[src]
+            dst_dp = self.datapaths[dst]
+
         pdb.set_trace()
 
     def _get_out_port(self, src_id, dst_id):

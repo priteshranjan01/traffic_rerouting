@@ -11,6 +11,7 @@ DPID = "dpid"
 NETWORK = "host"
 ADDRESS = "address"
 NETMASK = "netmask"
+PORT = "port"
 
 # weight is a special attribute used by networkx path calculation libraries
 WEIGHT = "weight"
