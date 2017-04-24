@@ -1,11 +1,14 @@
 from __future__ import print_function
 
+from ryu.ofproto.ofproto_v1_3 import OFPFC_DELETE, OFPG_ANY
+
 from constants import *
 
 import json
 import pdb
-from itertools import product
 from collections import namedtuple
+from itertools import product
+from time import sleep
 
 import networkx as nx
 
@@ -25,7 +28,6 @@ from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 network_ = namedtuple("network", "address, netmask, port")
-
 
 class Lsp(object):
     def __init__(self, label=None, path=None):
@@ -51,29 +53,19 @@ class BaseNetwork(app_manager.RyuApp):
         Start the network traffic monitoring routine.
         """
         super(BaseNetwork, self).__init__(*args, **kwargs)
+        self.REPEAT_TOPOLOGY_DISCOVERY = True
         self.name = "BaseNetwork"
         self.node_count = 0
+        self.connected_node_ct = 0
         self.lsp_count = 0
         self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
         self.lers = {}  # Label Edge Routers: (dpid) -> [(address, netmask, port)]
         self._read_config_file(CONFIG_FILE)
         # Directed graph because We need 2 labels for To and Fro path.
-        self.network = nx.DiGraph()  # Updated every time _discover is called.
+        self.network = nx.DiGraph()  # Updated when _discover is called.
         self.paths = {}  # (src, dst) -> [(label, path)]
         self._initialize_empty_ingress_egress_path()
-        self.discovery = hub.spawn(self._discover_topology)
-
-    def _discover_topology(self):
-        """
-        This thread infinitely runs at a periodic interval 
-        :return: 
-        """
-        while True:
-            hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
-            self._discover_()
-            self._dijkstra_shortest_path()
-            print (self.__str__())
-            self._create_proactive_lsp()
+        self.discovery = None
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
@@ -96,12 +88,12 @@ class BaseNetwork(app_manager.RyuApp):
             print ("DPID = {0}".format(dpid))
             for n in net:
                 print ("[address: {0}, netmask: {1}, port={2}]".format(n.address, n.netmask, n.port), end="\t")
-        print()
+            print()
 
     def _discover_(self):
         print ("Inside discovery")
         nodes = get_switch(self)
-        #print (nodes)
+        print (nodes)
         for node in nodes:
             if node.dp.id in self.datapaths:
                 self.network.add_node(node.dp.id)
@@ -109,8 +101,9 @@ class BaseNetwork(app_manager.RyuApp):
                 print ("WARNING: node={0} not in self.datapaths. SKIPPED".format(node.dp.id))
 
         links = get_link(self)
-        #print (links)
+        print ("Links {0}".format(links))
         for link in links.keys():
+            print("src= {0} dst = {1}".format(link.src, link.dst))
             if link.src.dpid in self.datapaths and link.dst.dpid in self.datapaths:
                 self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1, src_port=link.src.port_no, dst_port=link.dst.port_no)
             else:
@@ -125,6 +118,7 @@ class BaseNetwork(app_manager.RyuApp):
         """
         #pdb.set_trace()
         print ("Inside dijkstra")
+        #pdb.set_trace()
         for src, dst in product(self.lers.keys(), self.lers.keys()):
             if src != dst:
                 new_lsp = Lsp(self.lsp_count, nx.dijkstra_path(self.network, src, dst))
@@ -150,6 +144,24 @@ class BaseNetwork(app_manager.RyuApp):
                                 instructions=inst)
         datapath.send_msg(mod)
 
+    def del_flow(self, datapath, match):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = []
+        mod = parser.OFPFlowMod(datapath, command=ofproto.OFPFC_DELETE, priority=10, buffer_id=ofproto.OFPCML_NO_BUFFER, out_port=ofproto.OFPP_ANY, out_group=OFPG_ANY, match=match, instructions=[])
+        #mod = parser.OFPFlowMod(datapath=datapath, command=OFPFC_DELETE, match=match, instructions=inst)
+        datapath.send_msg(mod)
+
+    def del_all_flows(self, datapath):
+        parser = datapath.ofproto_parser
+        # Delete the MPLS flows
+        match = parser.OFPMatch(eth_type=MPLS)
+        self.del_flow(datapath, match)
+
+        # Delete the IP flows
+        match = parser.OFPMatch(eth_type=IP)
+        self.del_flow(datapath, match)
+
     def add_arp_broadcast_rule(self,ev):
         datapath = ev.datapath  # Check this
         parser = datapath.ofproto_parser
@@ -158,6 +170,22 @@ class BaseNetwork(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
         self.add_flow(datapath, 1, match, actions)
 
+    def _discover_topology(self):
+        """
+        This thread infinitely runs at a periodic interval 
+        :return: 
+        """
+        while True:
+            hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
+            if self.REPEAT_TOPOLOGY_DISCOVERY:
+                self._discover_()
+                self._dijkstra_shortest_path()
+                print(self.__str__())
+                self._create_proactive_lsp()
+                self.REPEAT_TOPOLOGY_DISCOVERY = False
+                #print ("Going to KILL thread {0}".format(self.discovery))
+                #hub.kill(self.discovery)
+                #print ("KILLED thread {0}".format(self.discovery))
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -174,7 +202,11 @@ class BaseNetwork(app_manager.RyuApp):
             else:
                 print("Core node dpid= {0} connected".format(datapath.id))
             self.datapaths[datapath.id] = datapath
+            self.del_all_flows(datapath)
             self.add_arp_broadcast_rule(ev)
+            self.connected_node_ct += 1
+            if self.connected_node_ct == self.node_count:
+                self.discovery = hub.spawn(self._discover_topology())
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.datapaths:
@@ -188,6 +220,7 @@ class BaseNetwork(app_manager.RyuApp):
                     self.network.remove_node(datapath.id)
                 except nx.exception.NetworkXError as ne:
                     print ("Node {0} was not in the network graph".format(datapath.id))
+                self.connected_node_ct -= 1
 
     def __str__(self):
         ret_str = "\nEdge Nodes:\n"
