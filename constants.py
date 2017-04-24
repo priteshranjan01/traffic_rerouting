@@ -4,8 +4,7 @@ TRAFFIC_MONITOR_INTERVAL = 10
 CONFIG_FILE="CONFIG.json"
 
 # Key in CONFIG.json
-EGRESS = "egress"
-INGRESS = "ingress"
+LER = "edges"
 NODE_CT = "node_ct"
 DPID = "dpid"
 NETWORK = "host"
@@ -15,3 +14,6 @@ PORT = "port"
 
 # weight is a special attribute used by networkx path calculation libraries
 WEIGHT = "weight"
+MPLS = 0x8847
+ARP = 0x806
+IP = 0x800
