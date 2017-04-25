@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import print_function, division
 
 from ryu.ofproto.ofproto_v1_3 import OFPFC_DELETE, OFPG_ANY
 
@@ -8,6 +8,7 @@ import json
 import pdb
 from collections import namedtuple
 from itertools import product
+from operator import attrgetter
 from time import sleep
 
 import networkx as nx
@@ -17,6 +18,7 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
+from ryu.ofproto.ofproto_v1_3 import OFPP_MAX
 
 from ryu.lib import hub
 from ryu.lib.packet import packet
@@ -28,6 +30,8 @@ from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 network_ = namedtuple("network", "address, netmask, port")
+port_ = namedtuple("port", "number, weight")
+
 
 class Lsp(object):
     def __init__(self, label=None, path=None):
@@ -59,13 +63,17 @@ class BaseNetwork(app_manager.RyuApp):
         self.connected_node_ct = 0
         self.lsp_count = 0
         self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
+        self.dp_stats = {}  # Updated when controller collects datapath statistics
+        self.dp_overload_ports = {}  # DPID -> [ports]
         self.lers = {}  # Label Edge Routers: (dpid) -> [(address, netmask, port)]
         self._read_config_file(CONFIG_FILE)
+        self.victim_nodes = set()
         # Directed graph because We need 2 labels for To and Fro path.
         self.network = nx.DiGraph()  # Updated when _discover is called.
         self.paths = {}  # (src, dst) -> [(label, path)]
         self._initialize_empty_ingress_egress_path()
-        self.discovery = None
+        self.discovery_thread = None
+        self.monitor_thread = None
 
     def _read_config_file(self, file_name=CONFIG_FILE):
         with open(file_name) as config:
@@ -134,7 +142,85 @@ class BaseNetwork(app_manager.RyuApp):
             print ("{0}  \t\t\t {1}".format(key, value))
 
     def _monitor_traffic(self):
-        pass
+        """
+        Get port data for each switch in the network.
+        At each switch, if  
+        """
+        while True:
+            hub.sleep(TRAFFIC_MONITOR_INTERVAL)
+            if self.REPEAT_TOPOLOGY_DISCOVERY == False:  # When the nework is stable
+                for dp in self.datapaths.values():
+                    # self._request_flow_stats(dp)
+                    self._request_port_stats(dp)
+
+    def _request_flow_stats(self, datapath, out_port):
+        parser = datapath.ofproto_parser
+        req = parser.OFPFlowStatsRequest(datapath, out_port=out_port)
+        datapath.send_msg(req)
+
+    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
+    def _flow_stats_reply_handler(self, ev):
+        body = ev.msg.body
+        datapath = ev.msg.datapath
+        print ("received flow stats reply from datapath {0}".format(datapath.id))
+
+    def _request_port_stats(self, dp):
+        ofproto = dp.ofproto
+        parser = dp.ofproto_parser
+        req = parser.OFPPortStatsRequest(dp, 0, ofproto.OFPP_ANY)
+        dp.send_msg(req)
+        print ("Sending port stats request to {0}".format(dp.id))
+
+    def _port_weight(self, stat):
+        # Simply returns tx.packets
+        return stat.tx_packets
+
+    def _average_weight(self, port_weight):
+        try:
+            wts = [wt for pt, wt in port_weight.items() if wt != 0 and pt < OFPP_MAX]
+            avg = sum(wts)/len(wts)
+            print ("WEIGHTS = {0}, average={1}".format(wts, avg))
+            return avg
+        except ZeroDivisionError:
+            # TODO: Decide what to do when the stats received was empty
+            print ("ZeroDivision ERROR")
+            return 0
+
+    def _overloaded_ports(self, dpid):
+        avg_wt = self._average_weight(self.dp_stats[dpid])
+        ov = [port for port, weight in self.dp_stats[dpid].items() if weight > (OVERLOAD_FACTOR + 1) * avg_wt]
+        print ("Overloaded ports on dpid: {0} = {1}".format(dpid, ov))
+        return ov
+
+    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
+    def _port_stats_reply_handler(self, ev):
+        body = ev.msg.body
+        datapath = ev.msg.datapath
+        for port_stat in body:
+            weight = self._port_weight(port_stat)
+            # We overwrite past stats
+            self.dp_stats[datapath.id][port_stat.port_no] = weight
+            print("dpid = {0}, port_no={1}, weight={2}".format(datapath.id,port_stat.port_no, self.dp_stats[datapath.id][port_stat.port_no]))
+        overloaded_ports = self._overloaded_ports(datapath.id)
+        self.dp_overload_ports[datapath.id] = overloaded_ports
+        # For each overloaded port, request flow rules.
+
+        for dst, ports in self.network.adj[datapath.id].items():
+            if ports['src_port'] in overloaded_ports:
+                self.victim_nodes.add(dst)
+
+        print ("Victim Nodes = {0}".format(self.victim_nodes))
+
+        #for port in overloaded_ports:
+        #   self._request_flow_stats(datapath, out_port=port)
+
+    """
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        print ("Received packet from datapath {0}".format(datapath.id))
+    """
 
     def add_flow(self, datapath, priority, match, actions):
         ofproto = datapath.ofproto
@@ -183,6 +269,7 @@ class BaseNetwork(app_manager.RyuApp):
                 print(self.__str__())
                 self._create_proactive_lsp()
                 self.REPEAT_TOPOLOGY_DISCOVERY = False
+                #self._monitor_traffic()
                 #print ("Going to KILL thread {0}".format(self.discovery))
                 #hub.kill(self.discovery)
                 #print ("KILLED thread {0}".format(self.discovery))
@@ -202,11 +289,14 @@ class BaseNetwork(app_manager.RyuApp):
             else:
                 print("Core node dpid= {0} connected".format(datapath.id))
             self.datapaths[datapath.id] = datapath
+            self.dp_stats[datapath.id] = {}
+            self.dp_overload_ports[datapath.id] = {}
             self.del_all_flows(datapath)
             self.add_arp_broadcast_rule(ev)
             self.connected_node_ct += 1
             if self.connected_node_ct == self.node_count:
-                self.discovery = hub.spawn(self._discover_topology())
+                self.discovery_thread = hub.spawn(self._discover_topology)
+                self.monitor_thread = hub.spawn(self._monitor_traffic)
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.datapaths:
@@ -215,6 +305,8 @@ class BaseNetwork(app_manager.RyuApp):
                 else:
                     print("Core node dpid= {0} disconnected".format(datapath.id))
                 del self.datapaths[datapath.id]
+                del self.dp_stats[datapath.id]
+                del self.dp_overload_ports[datapath.id]
                 # Remove from network graph also.
                 try:
                     self.network.remove_node(datapath.id)
