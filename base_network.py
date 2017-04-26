@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 
-from ryu.ofproto.ofproto_v1_3 import OFPFC_DELETE, OFPG_ANY
+from ryu.ofproto.ofproto_v1_3 import OFPFC_DELETE, OFPG_ANY, OFPFF_RESET_COUNTS
+from ryu.ofproto.ofproto_v1_3_parser import OFPActionOutput
 
 from constants import *
 
@@ -8,8 +9,6 @@ import json
 import pdb
 from collections import namedtuple
 from itertools import product
-from operator import attrgetter
-from time import sleep
 
 import networkx as nx
 
@@ -21,26 +20,17 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto.ofproto_v1_3 import OFPP_MAX
 
 from ryu.lib import hub
-from ryu.lib.packet import packet
+from ryu.lib.packet import packet, ether_types
 from ryu.lib.packet import ethernet
-from ryu.lib.packet import ipv4
-from ryu.lib.packet import arp
+from ryu.lib.packet import ipv4, tcp, udp, icmp
 
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 network_ = namedtuple("network", "address, netmask, port")
 port_ = namedtuple("port", "number, weight")
-
-
-class Lsp(object):
-    def __init__(self, label=None, path=None):
-        self.label = label
-        self.path = path
-
-    def __eq__(self, other):
-        return set(self.path) == set(other.path)
-
+flow_ = namedtuple("flow", "proto, src_ip, dst_ip, src_port, dst_port")
+Lsp = namedtuple("Lsp", "label, path")
 
 class BaseNetwork(app_manager.RyuApp):
     """
@@ -65,6 +55,7 @@ class BaseNetwork(app_manager.RyuApp):
         self.datapaths = {}  # Updated when a datapath connects/disconnects with the controller.
         self.dp_stats = {}  # Updated when controller collects datapath statistics
         self.dp_overload_ports = {}  # DPID -> [ports]
+        self.flow_stats = {}  # DPID -> [(IP_proto, SRC_IP, DST_IP, SRC_PORT, DST_PORT)]
         self.lers = {}  # Label Edge Routers: (dpid) -> [(address, netmask, port)]
         self._read_config_file(CONFIG_FILE)
         self.victim_nodes = set()
@@ -153,16 +144,40 @@ class BaseNetwork(app_manager.RyuApp):
                     # self._request_flow_stats(dp)
                     self._request_port_stats(dp)
 
-    def _request_flow_stats(self, datapath, out_port):
+    def _request_flow_stats(self, datapath):
         parser = datapath.ofproto_parser
-        req = parser.OFPFlowStatsRequest(datapath, out_port=out_port)
+        req = parser.OFPFlowStatsRequest(datapath)
+        print ("Sending Flow stats request to dpid {0}".format(datapath.id))
         datapath.send_msg(req)
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def _flow_stats_reply_handler(self, ev):
         body = ev.msg.body
         datapath = ev.msg.datapath
-        print ("received flow stats reply from datapath {0}".format(datapath.id))
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        #self.dp_overload_ports self.victim_nodes
+        print ("Received flow stats reply from datapath {0}".format(datapath.id))
+        #self.clear_all_stats(datapath)
+        print ("Cleared all stats on dpid {0}".format(datapath.id))
+        # pdb.set_trace()
+        for stat in body:
+            # clear the stats data from the datapath
+            #self.clear_stats(datapath, match=stat.match, inst=stat.instructions)
+            # Check if this flow stat is for one of the overloaded port
+            for ac in stat.instructions:
+                for action in ac.actions:
+                    if isinstance(action, OFPActionOutput):
+                        if action.port in self.dp_overload_ports[datapath.id]:
+                            match = stat.match
+                            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+                            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                            mod = parser.OFPFlowMod(datapath=datapath, priority=MAX_PRIORITY, match=match,
+                                                    flags=OFPFF_RESET_COUNTS, hard_timeout=HARD_TIMEOUT,
+                                                    instructions=inst)
+                            #datapath.send_msg(mod)
+                            print ("Dpid {0} match: {1} Send to CONTROLLER".format(datapath.id, match))
+        # pdb.set_trace()
 
     def _request_port_stats(self, dp):
         ofproto = dp.ofproto
@@ -203,7 +218,6 @@ class BaseNetwork(app_manager.RyuApp):
             print("dpid = {0}, port_no={1}, weight={2}".format(datapath.id,port_stat.port_no, self.dp_stats[datapath.id][port_stat.port_no]))
         overloaded_ports = self._overloaded_ports(datapath.id)
         self.dp_overload_ports[datapath.id] = overloaded_ports
-        # For each overloaded port, request flow rules.
 
         for dst, ports in self.network.adj[datapath.id].items():
             if ports['src_port'] in overloaded_ports:
@@ -211,31 +225,53 @@ class BaseNetwork(app_manager.RyuApp):
 
         print ("Victim Nodes = {0}".format(self.victim_nodes))
 
-        #for port in overloaded_ports:
-        #   self._request_flow_stats(datapath, out_port=port)
+        # Request flow stats for this datapath
+        self._request_flow_stats(datapath)
 
-    """
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
         datapath = msg.datapath
-        print ("Received packet from datapath {0}".format(datapath.id))
-    """
+        if eth.ethertype != ether_types.ETH_TYPE_IP and eth.ethertype != ether_types.ETH_TYPE_MPLS:
+            #print ("Dpid {0} packet ether type {1}".format(datapath.id, eth.ethertype))
+            return
+        if eth.ethertype == ether_types.ETH_TYPE_MPLS:
+            print ("Received MPLS packet from datapath {0}".format(datapath.id))
+            pdb.set_trace()
+        else:
+            print ("Received IPV4 packet from datapath {0}".format(datapath.id))
+            #pdb.set_trace()
+            ip = pkt.get_protocols(ipv4.ipv4)[0]
+            if ip.proto == 1 :
+                # ICMP
+                icmp_packet = pkt.get_protocols(icmp.icmp)[0]
+            elif ip.proto == 4:
+                tcp_ = pkt.get_protocols(tcp.tcp)[0]
+                self.flow_stats[datapath.id].add(flow_(4, ip.src, ip.dst, tcp_.src_port, tcp_.dst_port))
+            elif ip.proto == 17:
+                # TCP or UDP
+                # namedtuple("flow", "proto, src_ip, dst_ip, src_port, dst_port")
+                udp_ = pkt.get_protocols(udp.udp)[0]
+                self.flow_stats[datapath.id].add(flow_(17, ip.src, ip.dst, udp_.src_port, udp_.dst_port))
+        print ("Flow stats for dpid {0} = {1}".format(datapath.id, self.flow_stats[datapath.id]))
+
 
     def add_flow(self, datapath, priority, match, actions):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match,
-                                instructions=inst)
+                                flags=OFPFF_RESET_COUNTS, instructions=inst)
         datapath.send_msg(mod)
 
     def del_flow(self, datapath, match):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        inst = []
-        mod = parser.OFPFlowMod(datapath, command=ofproto.OFPFC_DELETE, priority=10, buffer_id=ofproto.OFPCML_NO_BUFFER, out_port=ofproto.OFPP_ANY, out_group=OFPG_ANY, match=match, instructions=[])
-        #mod = parser.OFPFlowMod(datapath=datapath, command=OFPFC_DELETE, match=match, instructions=inst)
+        mod = parser.OFPFlowMod(datapath, command=OFPFC_DELETE, priority=10,
+                                buffer_id=ofproto.OFPCML_NO_BUFFER, out_port=ofproto.OFPP_ANY,
+                                out_group=OFPG_ANY, match=match, instructions=[])
         datapath.send_msg(mod)
 
     def del_all_flows(self, datapath):
@@ -247,6 +283,13 @@ class BaseNetwork(app_manager.RyuApp):
         # Delete the IP flows
         match = parser.OFPMatch(eth_type=IP)
         self.del_flow(datapath, match)
+
+    def clear_stats(self, datapath, match, inst):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        mod = parser.OFPFlowMod(datapath, command=ofproto.OFPFC_MODIFY, flags=OFPFF_RESET_COUNTS,
+                                match=match, instructions=inst)
+        datapath.send_msg(mod)
 
     def add_arp_broadcast_rule(self,ev):
         datapath = ev.datapath  # Check this
@@ -291,6 +334,7 @@ class BaseNetwork(app_manager.RyuApp):
             self.datapaths[datapath.id] = datapath
             self.dp_stats[datapath.id] = {}
             self.dp_overload_ports[datapath.id] = {}
+            self.flow_stats[datapath.id] = set()
             self.del_all_flows(datapath)
             self.add_arp_broadcast_rule(ev)
             self.connected_node_ct += 1
@@ -307,6 +351,7 @@ class BaseNetwork(app_manager.RyuApp):
                 del self.datapaths[datapath.id]
                 del self.dp_stats[datapath.id]
                 del self.dp_overload_ports[datapath.id]
+                del self.flow_stats[datapath.id]
                 # Remove from network graph also.
                 try:
                     self.network.remove_node(datapath.id)

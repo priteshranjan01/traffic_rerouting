@@ -22,6 +22,8 @@ PORT = "port"
 # weight is a special attribute used by networkx path calculation libraries
 WEIGHT = "weight"
 # Ether Type protocol numbers.
+MAX_PRIORITY=500
+HARD_TIMEOUT=1
 MPLS = 0x8847
 ARP = 0x806
 IP = 0x800
