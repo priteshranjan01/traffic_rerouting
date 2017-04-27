@@ -1,11 +1,13 @@
 from __future__ import print_function, division
 
+import pdb
+
 from constants import *
 
 import networkx as nx
 
 import json
-import pdb
+# import pdb
 from collections import namedtuple
 from itertools import product
 
@@ -22,7 +24,7 @@ from ryu.ofproto.ofproto_v1_3 import OFPP_MAX
 from ryu.ofproto.ofproto_v1_3 import OFPFC_DELETE, OFPG_ANY, OFPFF_RESET_COUNTS
 from ryu.ofproto.ofproto_v1_3_parser import OFPActionOutput
 
-from ryu.topology import event, switches
+# from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 
 
@@ -37,7 +39,7 @@ class OfNetwork(app_manager.RyuApp):
     """
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-    def __init__(self, *args, **kwargs ):
+    def __init__(self, *args, **kwargs):
         """
         Initialize an empty dictionary to keep datapath objects.
         Start the network traffic monitoring routine.
@@ -53,9 +55,9 @@ class OfNetwork(app_manager.RyuApp):
         self.dp_overload_ports = {}  # {DPID -> [port_no]}
         self.dp_flows = {}  # {DPID -> 5_tuple_flow_keys}
         self.edges = {}  # Edge nodes  {DPID -> network_}
-        self.victim_nodes = set()  # The nodes not be considered in path calculation
+        self.neglect_nodes = {}  # nodes not considered in path calculation. {DPID -> set()}
         # Directed graph because We need 2 labels for To and Fro path.
-        self.network = nx.DiGraph()  # Updated when _discover is called.
+        self.network = None  # Updated when _discover is called.
         self.paths = {}  # (src, dst) -> [(label, path)]
         self.discovery_thread = None
         self.monitor_thread = None
@@ -86,15 +88,18 @@ class OfNetwork(app_manager.RyuApp):
             self.dp_stats[datapath.id] = {}
             self.dp_overload_ports[datapath.id] = {}
             self.dp_flows[datapath.id] = set()
+            self.neglect_nodes[datapath.id] = set()
             # Delete all flows (of eth_type == IP)
             self._delete_all_flows(datapath)
             # Add ARP broadcast rule
-            self._add_arp_broadast_rule(datapath)
+            self._add_arp_broadcast_rule(datapath)
             self.connected_node_ct += 1
             if self.connected_node_ct == self.node_count:
                 # All datapaths have connected. Start topology discovery
+                self.network = nx.DiGraph()
                 self.discovery_thread = hub.spawn(self._discover_topology)
-                # TODO: Start traffic monitor thread.
+                # Start traffic monitor thread.
+                self.monitor_thread = hub.spawn(self._monitor_traffic)
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.edges:
@@ -105,9 +110,10 @@ class OfNetwork(app_manager.RyuApp):
             del self.dp_stats[datapath.id]
             del self.dp_overload_ports[datapath.id]
             del self.dp_flows[datapath.id]
+            del self.neglect_nodes[datapath.id]
             try:
                 self.network.remove_node(datapath.id)
-            except nx.exception.NetworkXError as ne:
+            except nx.exception.NetworkXError:
                 print ("Node {0} was not in the network graph".format(datapath.id))
             self.connected_node_ct -= 1
 
@@ -117,10 +123,127 @@ class OfNetwork(app_manager.RyuApp):
         """
         while True:
             hub.sleep(TRAFFIC_MONITOR_INTERVAL)
-            if self.REPEAT_TOPOLOGY_DISCOVERY == False:  # When the nework is stable
+            if self.REPEAT_TOPOLOGY_DISCOVERY is False:  # When the nework is stable
                 for dp in self.datapaths.values():
-                    # TODO: Request Port stats.
-                    pass
+                    # Request Port stats.
+                    #pdb.set_trace()
+                    self._request_port_stats(dp)
+
+    def _request_port_stats(self, datapath):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
+        print ("Sent port stats request to {0}".format(datapath.id))
+        datapath.send_msg(req)
+
+    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
+    def _port_stats_reply_handler(self, ev):
+        body = ev.msg.body
+        datapath = ev.msg.datapath
+        for port_stat in body:
+            port = port_stat.port_no
+            if port >= OFPP_MAX:  # If a virtual port. then Ignore
+                continue
+            weight = self._port_weight(port_stat)
+            # We overwrite past stats.
+            self.dp_stats[datapath.id][port_stat.port_no] = weight
+            #print("dpid = {0}, port_no={1}, weight={2}".format(datapath.id, port, self.dp_stats[datapath.id][port]))
+        overloaded_ports = self._overloaded_ports(datapath.id)
+        self.dp_overload_ports[datapath.id] = overloaded_ports
+
+        for dst, ports in self.network.adj[datapath.id].items():
+            if ports['src_port'] in overloaded_ports:
+                self.neglect_nodes[datapath.id].add(dst)
+        print ("DPID {0} neglected nodes = {1}".format(datapath.id, self.neglect_nodes[datapath.id]))
+        # TODO: Request flow stats for this datapath
+        self._request_flow_stats(datapath)
+
+    def _request_flow_stats(self, datapath):
+        parser = datapath.ofproto_parser
+        req = parser.OFPPortStatsRequest(datapath)
+        print ("Sending Flow stats request to dpid {0}".format(datapath.id))
+        datapath.send_msg(req)
+
+    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
+    def _flow_stats_reply_handler(self, ev):
+        body = ev.msg.body
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        print ("Received flow stats reply from datapath {0}".format(datapath.id))
+        for stat in body:
+            # Clear flow stats from the datapath
+            self._clear_stats(datapath, stat.match, stat.instructions)
+            for ac in stat.instructions:
+                for action in ac.actions:
+                    if isinstance(action, OFPActionOutput):
+                        # check if this flow stat is for one of the overloaded ports
+                        if action.port in self.dp_overload_ports[datapath.id]:
+                            match = stat.match
+                            # For analysis, we need data at the controller. This will cause extra disruptions.
+                            # Would have been better if we could leave the controller out of this.
+                            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+                            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                            mod = parser.OFPFlowMod(datapath=datapath, priority=MAX_PRIORITY, match=match,
+                                                    flags=OFPFF_RESET_COUNTS, hard_timeout=HARD_TIMEOUT,
+                                                    instructions=inst)
+                            datapath.send_msg(mod)
+                            print ("Dpid {0} match: {1} Send to CONTROLLER".format(datapath.id, match))
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
+        if eth.ethertype != ether_types.ETH_TYPE_IP:
+            # We only handle IP packets at the controller.
+            return
+        datapath = msg.datapath
+        ip = pkt.get_protocols(ipv4.ipv4)[0]
+        if ip.proto == 1:  # ICMP
+            icmp_packet = pkt.get_protocols(icmp.icmp)[0]
+            print ("{0} Received ICMP packet {1}".format(datapath.id, icmp_packet))
+        elif ip.proto == 4:  # TCP
+            tcp_ = pkt.get_protocols(tcp.tcp)[0]
+            self.dp_flows[datapath.id].add(flow_(4, ip.src, ip.dst, tcp_.src_port, tcp_.dst_port))
+            print ("{0} Received TCP packet src_ip={1}, dst_ip={2}, src_port={3}, dst_port={4}".format(
+                datapath.id, ip.src, ip.dst, tcp_.src_port, tcp_.dst_port))
+        elif ip.proto == 17:  # UDP
+            # namedtuple("flow", "proto, src_ip, dst_ip, src_port, dst_port")
+            udp_ = pkt.get_protocols(udp.udp)[0]
+            self.dp_flows[datapath.id].add(flow_(17, ip.src, ip.dst, udp_.src_port, udp_.dst_port))
+            print("{0} Received UDP packet src_ip={1}, dst_ip={2}, src_port={3}, dst_port={4}".format(
+                datapath.id, ip.src, ip.dst, udp_.src_port, udp_.dst_port))
+        print("{0} : Flow stats = {1}".format(datapath.id, self.dp_flows[datapath.id]))
+
+    def _clear_stats(self, datapath, match, inst):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        mod = parser.OFPFlowMod(datapath, command=ofproto.OFPFC_MODIFY_STRICT,
+                                flags=OFPFF_RESET_COUNTS,
+                                match=match, instructions=inst)
+        datapath.send_msg(mod)
+        print ("dpid {0} Cleared stats ".format(datapath.id))
+
+    def _average_weight(self, port_weight):
+        try:
+            wts = [wt for pt, wt in port_weight.items() if wt != 0 and pt < OFPP_MAX]
+            avg = sum(wts)/len(wts)
+            print ("Weight = {0}, average={1}".format(wts, avg))
+            return avg
+        except ZeroDivisionError:
+            # TODO: Decide what to do when the stats received was empty
+            print ("ZeroDivision ERROR")
+            return 0
+
+    def _overloaded_ports(self, dpid):
+        avg_wt = self._average_weight(self.dp_stats[dpid])
+        ov = [port for port, weight in self.dp_stats[dpid].items() if weight > (OVERLOAD_FACTOR+1) * avg_wt]
+        print ("Overloaded ports on dpid {0} = {1}".format(dpid, ov))
+        return ov
+
+    def _port_weight(self, stat):
+        return stat.tx_packets
 
     def _install_proactive_flows(self):
         """
@@ -158,17 +281,16 @@ class OfNetwork(app_manager.RyuApp):
         while True:
             hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
             if self.REPEAT_TOPOLOGY_DISCOVERY:
-                self.REPEAT_TOPOLOGY_DISCOVERY = False
                 # Start discover
                 self._discover_()
                 # Run Dijkstra. Find the shortest path from each datapath to each edge
                 self._dijkstra_shortest_path()
                 self._install_proactive_flows()
+                self.REPEAT_TOPOLOGY_DISCOVERY = False
 
     def _dijkstra_shortest_path(self):
         print ("Inside Dijkstra")
         print (self.__str__())
-        #pdb.set_trace()
         for src, dst in product(self.datapaths, self.edges):
             if src != dst:
                 path = nx.dijkstra_path(self.network, src, dst)
@@ -189,12 +311,13 @@ class OfNetwork(app_manager.RyuApp):
         for link in links.keys():
             print("src= {0} dst = {1}".format(link.src, link.dst))
             if link.src.dpid in self.datapaths and link.dst.dpid in self.datapaths:
-                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1, src_port=link.src.port_no, dst_port=link.dst.port_no)
+                self.network.add_edge(link.src.dpid, link.dst.dpid, WEIGHT=1, src_port=link.src.port_no,
+                                      dst_port=link.dst.port_no)
             else:
                 print ("WARNING: link.src={0} and link.dst={1} not in self.datapaths. SKIPPED".format(
                     link.src.dpid, link.dst.dpid))
 
-    def _add_arp_broadast_rule(self, datapath):
+    def _add_arp_broadcast_rule(self, datapath):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
         match = parser.OFPMatch(eth_type=ARP)
@@ -230,5 +353,5 @@ class OfNetwork(app_manager.RyuApp):
         ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid))) for dpid in self.datapaths])
         ret_str += "\nEdge list:\n"
         ret_str += "\n".join(["(src={0}, {1}), (dst={2}, {3})".format(
-            x,self.network[x][y]['src_port'],y, self.network[x][y]['dst_port']) for x,y in self.network.edges()])
+            x, self.network[x][y]['src_port'], y, self.network[x][y]['dst_port']) for x, y in self.network.edges()])
         return ret_str
