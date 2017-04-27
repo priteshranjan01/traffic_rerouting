@@ -160,7 +160,7 @@ class OfNetwork(app_manager.RyuApp):
 
     def _request_flow_stats(self, datapath):
         parser = datapath.ofproto_parser
-        req = parser.OFPPortStatsRequest(datapath)
+        req = parser.OFPFlowStatsRequest(datapath)
         print ("Sending Flow stats request to dpid {0}".format(datapath.id))
         datapath.send_msg(req)
 
