@@ -7,7 +7,7 @@ TRAFFIC_MONITOR_INTERVAL = 10
 # For example, if the average number of packets processed by the ports
 # on switch S is X, then if a port P handles more than 1.2X packets, then
 # X shall be considered as overloaded.
-OVERLOAD_FACTOR = 0.2
+OVERLOAD_FACTOR = 0.01
 CONFIG_FILE = "CONFIG.json"
 
 # Key in CONFIG.json
@@ -23,7 +23,7 @@ PORT = "port"
 WEIGHT = "weight"
 # Ether Type protocol numbers.
 MAX_PRIORITY=500
-HARD_TIMEOUT=1
+HARD_TIMEOUT=5
 MPLS = 0x8847
 ARP = 0x806
 IP = 0x800
