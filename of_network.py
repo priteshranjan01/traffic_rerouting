@@ -138,11 +138,25 @@ class OfNetwork(app_manager.RyuApp):
             match = parser.OFPMatch(eth_type=IP, ipv4_dst=ip_dst)
             actions = [parser.OFPActionOutput(port=src_out_port)]
             self._add_flow(src_dp, priority=10, match=match, actions=actions)
-            print ("{0} SUCCESS Rule, match={IP Dst={1}, Action={output:{2}".format(
+            print ("{0} SUCCESS Rule, match=(IP Dst={1}), Action=(output:{2})".format(
                 src_dp.id, ip_dst, src_out_port))
+
+        # At each edge node, install rule to forward traffic to host.
+        for edge, nets in self.edges.items():
+            for net in nets:
+                out_port = net.port
+                ip_dst = net.address
+                dp = self.datapaths[edge]
+                parser = dp.ofproto_parser
+                match = parser.OFPMatch(eth_type=IP, ipv4_dst=ip_dst)
+                actions = [parser.OFPActionOutput(port=out_port)]
+                self._add_flow(dp, priority=10, match=match, actions=actions)
+                print ("{0} SUCCESS Rule, match=(IP Dst={1}), Action=(output:{2})".format(
+                    dp.id, ip_dst, out_port))
 
     def _discover_topology(self):
         while True:
+            hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
             if self.REPEAT_TOPOLOGY_DISCOVERY:
                 self.REPEAT_TOPOLOGY_DISCOVERY = False
                 # Start discover
@@ -150,10 +164,11 @@ class OfNetwork(app_manager.RyuApp):
                 # Run Dijkstra. Find the shortest path from each datapath to each edge
                 self._dijkstra_shortest_path()
                 self._install_proactive_flows()
-            hub.sleep(TOPOLOGY_DISCOVERY_INTERVAL)
 
     def _dijkstra_shortest_path(self):
         print ("Inside Dijkstra")
+        print (self.__str__())
+        #pdb.set_trace()
         for src, dst in product(self.datapaths, self.edges):
             if src != dst:
                 path = nx.dijkstra_path(self.network, src, dst)
@@ -165,6 +180,7 @@ class OfNetwork(app_manager.RyuApp):
         print ("Inside discovery")
         nodes = get_switch(self)
         for node in nodes:
+            print (node)
             if node.dp.id in self.datapaths:
                 self.network.add_node(node.dp.id)
             else:
@@ -207,3 +223,12 @@ class OfNetwork(app_manager.RyuApp):
                                 out_group=OFPG_ANY, match=match, instructions=[])
         datapath.send_msg(mod)
 
+    def __str__(self):
+        ret_str = "\nEdge Nodes:\n"
+        ret_str += "\t".join([str(node) for node in self.edges])
+        ret_str += "\n\nDatapaths: int, \t\t hex \n\t"
+        ret_str += "\t".join(["{0}\t{1}\n".format(str(dpid), str(hex(dpid))) for dpid in self.datapaths])
+        ret_str += "\nEdge list:\n"
+        ret_str += "\n".join(["(src={0}, {1}), (dst={2}, {3})".format(
+            x,self.network[x][y]['src_port'],y, self.network[x][y]['dst_port']) for x,y in self.network.edges()])
+        return ret_str
