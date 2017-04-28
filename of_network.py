@@ -236,20 +236,24 @@ class OfNetwork(app_manager.RyuApp):
             #print ("Match: {0}".format(stat.match))
             #print ("Instructions: {0}".format(stat.instructions))
             for ac in stat.instructions:
+                send_to_controller = False
                 for action in ac.actions:
                     if isinstance(action, OFPActionOutput):
                         # check if this flow stat is for one of the overloaded ports
                         if action.port in self.dp_overload_ports[datapath.id]:
                             match = stat.match
-                            # For analysis, we need data at the controller. This will cause extra disruptions.
-                            # Would have been better if we could leave the controller out of this.
-                            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-                            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-                            mod = parser.OFPFlowMod(datapath=datapath, priority=MAX_PRIORITY, match=match,
-                                                    flags=OFPFF_RESET_COUNTS, hard_timeout=HARD_TIMEOUT,
-                                                    instructions=inst)
-                            datapath.send_msg(mod)
-                            print ("\nDpid {0} match: {1} Send to CONTROLLER\n".format(datapath.id, match))
+                            send_to_controller = True
+                if send_to_controller is True:
+                    ac.actions.append(parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER))
+                    # For analysis, we need data at the controller. This will cause extra disruptions.
+                    # Would have been better if we could leave the controller out of this.
+#                    actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+#                   inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                    mod = parser.OFPFlowMod(datapath=datapath, priority=MAX_PRIORITY, match=match,
+                                            flags=OFPFF_RESET_COUNTS, hard_timeout=HARD_TIMEOUT,
+                                            instructions=stat.instructions)
+                    datapath.send_msg(mod)
+                    print ("\nDpid {0} match: {1} Send to CONTROLLER\n".format(datapath.id, match))
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
