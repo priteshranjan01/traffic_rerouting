@@ -31,7 +31,7 @@ from ryu.topology.api import get_switch, get_link
 network_ = namedtuple("network", "address, netmask, port")
 port_ = namedtuple("port", "number, weight")
 flow_ = namedtuple("flow", "proto, src_ip, dst_ip, src_port, dst_port")
-
+port_stats_ = namedtuple("port_stats", "rx, tx, rx_err, tx_err")
 
 class OfNetwork(app_manager.RyuApp):
     """
@@ -53,12 +53,14 @@ class OfNetwork(app_manager.RyuApp):
         self.datapaths = {}
         self.dp_stats = {}  # {DPID -> port_}
         self.dp_overload_ports = {}  # {DPID -> [port_no]}
-        self.dp_flows = {}  # {DPID -> 5_tuple_flow_keys}
+        self.dp_flows = {}  # {DPID -> set(5_tuple_flow_keys)}
         self.edges = {}  # Edge nodes  {DPID -> network_}
         self.neglect_nodes = {}  # nodes not considered in path calculation. {DPID -> set()}
         # Directed graph because We need 2 labels for To and Fro path.
         self.network = None  # Updated when _discover is called.
         self.paths = {}  # (src, dst) -> [(label, path)]
+        self.dp_port_stats = {}  # dpid -> {port -> port_stats}
+        self.dp_port_stats_diff = {}  # dpid -> {port -> port_stats}
         self.discovery_thread = None
         self.monitor_thread = None
         self.analyzer_thread = None
@@ -87,6 +89,8 @@ class OfNetwork(app_manager.RyuApp):
                 print("Core node dpid= {0} connected".format(datapath.id))
             self.datapaths[datapath.id] = datapath
             self.dp_stats[datapath.id] = {}
+            self.dp_port_stats[datapath.id] = {}
+            self.dp_port_stats_diff[datapath.id] = {}
             self.dp_overload_ports[datapath.id] = {}
             self.dp_flows[datapath.id] = set()
             self.neglect_nodes[datapath.id] = set()
@@ -101,6 +105,7 @@ class OfNetwork(app_manager.RyuApp):
                 self.discovery_thread = hub.spawn(self._discover_topology)
                 # Start traffic monitor thread.
                 self.monitor_thread = hub.spawn(self._monitor_traffic)
+                self.analyzer_thread = hub.spawn(self._analyze_traffic)
 
         elif ev.state == DEAD_DISPATCHER:
             if datapath.id in self.edges:
@@ -112,10 +117,12 @@ class OfNetwork(app_manager.RyuApp):
             del self.dp_overload_ports[datapath.id]
             del self.dp_flows[datapath.id]
             del self.neglect_nodes[datapath.id]
+            del self.dp_port_stats[datapath.id]
+            del self.dp_port_stats_diff[datapath.id]
             try:
                 self.network.remove_node(datapath.id)
             except nx.exception.NetworkXError:
-                print ("Node {0} was not in the network graph".format(datapath.id))
+                print ("ERROR: Node {0} was not in the network graph".format(datapath.id))
             self.connected_node_ct -= 1
 
     def _analyze_traffic(self):
@@ -123,29 +130,35 @@ class OfNetwork(app_manager.RyuApp):
         Analyzes the flows in the datapaths and installs microflow rules 
         that divert parts of the flow through a different route.
         """
+        hub.sleep(5)  # Skew this thread by 5 seconds, to that of monitor thread
         while True:
             hub.sleep(TRAFFIC_MONITOR_INTERVAL)
-            if self.REPEAT_TOPOLOGY_DISCOVERY is False:  # When the nework is stable
+            if self.REPEAT_TOPOLOGY_DISCOVERY is False:  # When the network is stable
                 for dp in self.datapaths.values():
                     self._install_microflow_rules(dp)
 
     def _install_microflow_rules(self, datapath):
         neg_nodes = self.neglect_nodes[datapath.id]
-        micro_rules = self.dp_flows[datapath.id]
+        micro_flows = list(self.dp_flows[datapath.id])
+        # TODO: Reset the neglect_nodes and dp_flows
+        print ("{0} Neglected Nodes: {1}".format(datapath.id, neg_nodes))
+        print ("Micro Flow RUles: {0}".format(micro_flows))
+        self.neglect_nodes[datapath.id] = set()
+        self.dp_flows[datapath.id] = set()
         # micro_rules shall only have those micro-flows that were outgoing of the
         # overloaded ports.
-        if neg_nodes and micro_rules:
+        if neg_nodes and micro_flows:
             gr = self.network.copy()
             # Remove the neglected nodes from the network view of this datapath
             for node in neg_nodes:
                 gr.remove_node(node)
             src = datapath.id
             # Route half of the flows through a new channel.
-            for rule in micro_rules[:len(micro_rules)/2]:
+            for rule in micro_flows[:len(micro_flows)//2]:
                 for edge, net in self.edges.items():  # For each rule pick the concerned edge
                     if edge == src:
                         continue
-                    if net.address == rule.dst_ip:
+                    if net[0].address == rule.dst_ip:
                         try:
                             path = nx.dijkstra_path(gr, src, edge)
                             src_out_port = gr[src][path[1]]['src_port']
@@ -158,16 +171,16 @@ class OfNetwork(app_manager.RyuApp):
                                 match = parser.OFPMatch(eth_type=IP, ip_proto=rule.proto, ipv4_src=rule.src_ip,
                                                         ipv4_dst=rule.dst_ip, tcp_src=rule.src_port, tcp_dst=rule.dst_port)
                             else:
-                                print (" ERROR in microflow rule {0}".format(rule))
+                                print ("ERROR in microflow rule {0}".format(rule))
                                 return
                             actions = [parser.OFPActionOutput(port=src_out_port)]
-                            self._add_flow(datapath, priority=100, match=match, timeout=10,
+                            # TODO: Forgot timeout?
+                            self._add_flow(datapath, priority=100, match=match,
                                            actions=actions)
+                            print ("{0} Rule Added {1} action output: {2}".format(src, match, src_out_port))
                         except nx.exception.NetworkXNoPath:
                             print ("WARNING: No new path from {0} to {1}".format(src, edge))
                             continue
-
-
 
     def _monitor_traffic(self):
         """
@@ -200,7 +213,8 @@ class OfNetwork(app_manager.RyuApp):
             if datapath.id in self.edges and port == self.edges[datapath.id][0].port:
                 # Don't consider ports connecting host nodes to edge nodes.
                 continue
-            weight = self._port_weight(port_stat)
+            self._save_port_stats(datapath.id, port_stat)
+            weight = self._port_weight(datapath.id, port)
             # We overwrite past stats.
             self.dp_stats[datapath.id][port_stat.port_no] = weight
             #print("dpid = {0}, port_no={1}, weight={2}".format(datapath.id, port, self.dp_stats[datapath.id][port]))
@@ -212,9 +226,29 @@ class OfNetwork(app_manager.RyuApp):
         for dst, ports in self.network.adj[datapath.id].items():
             if ports['src_port'] in overloaded_ports:
                 self.neglect_nodes[datapath.id].add(dst)
-        print ("neglected nodes = {1}\n".format(datapath.id, self.neglect_nodes[datapath.id]))
+        print ("Neglected nodes = {1}\n".format(datapath.id, self.neglect_nodes[datapath.id]))
         # Request flow stats for this datapath
         self._request_flow_stats(datapath)
+
+    def _save_port_stats(self, dpid, ps):
+        port_no = ps.port_no
+        if port_no in self.dp_port_stats[dpid]:
+            stat_ = self.dp_port_stats[dpid][port_no]
+            rx = ps.rx_packets - stat_.rx
+            tx = ps.tx_packets - stat_.tx
+            rx_err = ps.rx_errors - stat_.rx_err
+            tx_err = ps.tx_errors - stat_.tx_err
+            self.dp_port_stats[dpid][port_no] = port_stats_(ps.rx_packets, ps.tx_packets,
+                                                            ps.rx_errors, ps.tx_errors)
+            self.dp_port_stats_diff[dpid][port_no] = port_stats_(rx, tx, rx_err, tx_err)
+        else:
+            # port_stats_ = namedtuple("port_stats", "rx, tx, rx_err, tx_err")
+            self.dp_port_stats[dpid][port_no] = port_stats_(ps.rx_packets, ps.tx_packets,
+                                                            ps.rx_errors,ps.tx_errors)
+            self.dp_port_stats_diff[dpid][port_no] = port_stats_(0,0,0,0)
+        # print("Port stats dpid {0} : {1}".format(dpid, self.dp_port_stats[dpid]))
+        # print("Port stats dpid {0} : {1}".format(dpid, self.dp_port_stats_diff[dpid]))
+        #pdb.set_trace()
 
     def _request_flow_stats(self, datapath):
         parser = datapath.ofproto_parser
@@ -269,34 +303,34 @@ class OfNetwork(app_manager.RyuApp):
         #pdb.set_trace()
         # Only those IP packets will come to controller that were going out of the
         # the overloaded ports.
-        print ()
+        #print ()
         if ip.proto == in_proto.IPPROTO_ICMP:  # ICMP
             icmp_packet = pkt.get_protocols(icmp.icmp)[0]
             # Don't modify paths for ICMP traffic. It causes a lot of churn.
-            print ("{0} Received ICMP packet {1}".format(datapath.id, icmp_packet))
+            #print ("{0} Received ICMP packet {1}".format(datapath.id, icmp_packet))
         elif ip.proto == in_proto.IPPROTO_TCP:  # TCP
             tcp_ = pkt.get_protocols(tcp.tcp)[0]
             self.dp_flows[datapath.id].add(flow_(in_proto.IPPROTO_TCP, ip.src,
                                                  ip.dst, tcp_.src_port, tcp_.dst_port))
-            print ("{0} Received TCP packet src_ip={1}, dst_ip={2}, src_port={3}, dst_port={4}".format(
-                datapath.id, ip.src, ip.dst, tcp_.src_port, tcp_.dst_port))
+            # print ("{0} Received TCP packet src_ip={1}, dst_ip={2}, src_port={3}, dst_port={4}".format(
+            #     datapath.id, ip.src, ip.dst, tcp_.src_port, tcp_.dst_port))
         elif ip.proto == in_proto.IPPROTO_UDP:  # UDP
             # namedtuple("flow", "proto, src_ip, dst_ip, src_port, dst_port")
             udp_ = pkt.get_protocols(udp.udp)[0]
             self.dp_flows[datapath.id].add(flow_(in_proto.IPPROTO_UDP, ip.src,
                                                  ip.dst, udp_.src_port, udp_.dst_port))
-            print("{0} Received UDP packet src_ip={1}, dst_ip={2}, src_port={3}, dst_port={4}".format(
-                datapath.id, ip.src, ip.dst, udp_.src_port, udp_.dst_port))
-        print("{0} : Flow stats = {1}".format(datapath.id, self.dp_flows[datapath.id]))
+            # print("{0} Received UDP packet src_ip={1}, dst_ip={2}, src_port={3}, dst_port={4}".format(
+            #     datapath.id, ip.src, ip.dst, udp_.src_port, udp_.dst_port))
+        #print("{0} : Flow stats = {1}".format(datapath.id, self.dp_flows[datapath.id]))
 
-    def _clear_stats(self, datapath, match, inst):
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        mod = parser.OFPFlowMod(datapath, command=ofproto.OFPFC_MODIFY,
-                                flags=OFPFF_RESET_COUNTS,
-                                match=match, instructions=inst)
-        datapath.send_msg(mod)
-        print ("dpid {0} Cleared stats ".format(datapath.id))
+    # def _clear_stats(self, datapath, match, inst):
+    #     ofproto = datapath.ofproto
+    #     parser = datapath.ofproto_parser
+    #     mod = parser.OFPFlowMod(datapath, command=ofproto.OFPFC_MODIFY,
+    #                             flags=OFPFF_RESET_COUNTS,
+    #                             match=match, instructions=inst)
+    #     datapath.send_msg(mod)
+    #     print ("dpid {0} Cleared stats ".format(datapath.id))
 
     def _average_weight(self, port_weight):
         try:
@@ -305,8 +339,8 @@ class OfNetwork(app_manager.RyuApp):
             print ("Weight = {0}, average={1}".format(wts, avg), end="\t")
             return avg
         except ZeroDivisionError:
-            # TODO: Decide what to do when the stats received was empty
-            print ("ZeroDivision ERROR")
+            # retun zero the stats received was empty
+            # print ("ZeroDivision ERROR")
             return 0
 
     def _overloaded_ports(self, dpid):
@@ -314,8 +348,8 @@ class OfNetwork(app_manager.RyuApp):
         ov = [port for port, weight in self.dp_stats[dpid].items() if weight > (OVERLOAD_FACTOR+1) * avg_wt]
         return ov
 
-    def _port_weight(self, stat):
-        return stat.tx_packets
+    def _port_weight(self, dpid, port_no):
+        return self.dp_port_stats_diff[dpid][port_no].tx
 
     def _install_proactive_flows(self):
         """
@@ -393,7 +427,7 @@ class OfNetwork(app_manager.RyuApp):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
         match = parser.OFPMatch(eth_type=ARP)
-        actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+        actions = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
         self._add_flow(datapath, priority=1, match=match, actions=actions)
 
     def _add_flow(self, datapath, priority, match, actions, timeout=0):
