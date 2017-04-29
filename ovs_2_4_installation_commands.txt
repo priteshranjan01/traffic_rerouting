@@ -19,3 +19,10 @@ sudo dpkg -i openvswitch-common*.deb openvswitch-datapath-dkms*.deb openvswitch-
 #sudo update-rc.d openvswitch-testcontroller disable
 #sudo /etc/init.d/openvswitch-switch start
 
+# Install OVS on the ExoGENI Fedora 22 nodes. 
+echo "nameserver 10.103.0.1" > /etc/resolv.conf
+dnf clean all
+dnf update -y
+dnf install openvswitch -y
+/usr/share/openvswitch/scripts/ovs-ctl start
+ovs-vsctl show
