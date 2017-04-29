@@ -97,7 +97,7 @@ class OfNetwork(app_manager.RyuApp):
             # Delete all flows (of eth_type == IP)
             self._delete_all_flows(datapath)
             # Add ARP broadcast rule
-            self._add_arp_broadcast_rule(datapath)
+            #self._add_arp_broadcast_rule(datapath)
             self.connected_node_ct += 1
             if self.connected_node_ct == self.node_count:
                 # All datapaths have connected. Start topology discovery
@@ -359,6 +359,27 @@ class OfNetwork(app_manager.RyuApp):
                 match = edge IP address.
                 action = output at out_port
         """
+        #pdb.set_trace()
+        for ed1, ed2 in product(self.edges.keys(), self.edges.keys()):
+            if ed1 == ed2: continue
+            path = self.paths[(ed1, ed2)]
+            in_port = self.edges[ed1][0].port
+            for i in range(len(path)-1):
+                n1 = path[i]
+                n2 = path[i+1]
+                out_port = self.network[n1][n2]['src_port']
+                dp = self.datapaths[n1]
+                parser = dp.ofproto_parser
+                match = parser.OFPMatch(eth_type=ARP, in_port=in_port)
+                actions = [parser.OFPActionOutput(port=out_port)]
+                print ("{0} ARP rule match = {1} \n actions={2}\n".format(dp.id, match, actions))
+                self._add_flow(dp, priority=0, match=match, actions=actions)
+                match = parser.OFPMatch(eth_type=ARP, in_port=out_port)
+                actions = [parser.OFPActionOutput(port=in_port)]
+                print ("{0} ARP rule match = {1} \n actions={2}\n".format(dp.id, match, actions))
+                self._add_flow(dp, priority=0, match=match, actions=actions)
+                in_port = self.network[n1][n2]['dst_port']
+
         for (src, edge), path in self.paths.items():
             ip_dst = getattr(self.edges[edge][0], ADDRESS)
             src_out_port = self.network[src][path[1]]['src_port']
@@ -442,6 +463,8 @@ class OfNetwork(app_manager.RyuApp):
     def _delete_all_flows(self, datapath):
         parser = datapath.ofproto_parser
         match = parser.OFPMatch(eth_type=IP)
+        self._del_flow(datapath, match)
+        match = parser.OFPMatch(eth_type = ARP)
         self._del_flow(datapath, match)
 
     def _del_flow(self, datapath, match):
