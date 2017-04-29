@@ -17,6 +17,19 @@
 #### sudo apt-get update
 #### sudo apt-get install wireshark
 
+
+### Install qperf on ubuntu 
+sudo apt-get install -y make gcc libc-dev
+wget https://www.openfabrics.org/downloads/qperf/qperf-0.4.9.tar.gz
+tar xvf qperf-0.4.9.tar.gz
+cd qperf-0.4.9
+./configure
+make
+#binary will be at qperf-0.4.9/src/qperf
+
+### install qperf on feroda 22
+dnf install qperf
+
 ## TCP-DUMP (because sometimes Wireshark is not an option)
 Quick cheat-sheet: https://danielmiessler.com/study/tcpdump/
 tcpdump -i eth1  # Listen for all packets on interface eth1
