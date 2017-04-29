@@ -17,3 +17,4 @@ pip install --upgrade webob
 pip install tinyrpc
 pip install ovs
 pip install msgpack-python
+pip install networkx
