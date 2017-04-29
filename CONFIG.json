@@ -1,24 +1,24 @@
 {
-  "node_ct": 3,
+  "node_ct": 7,
   "edges":
   [
     {
-      "dpid": "000096406974cd44",
+      "dpid": "0000b671c8fe5546",
       "host": [
         {
-          "address": "10.0.1.58",
+          "address": "10.0.0.1",
           "netmask": "255.255.255.0",
-          "port": 3
+          "port": 1
         }
       ]
     },
     {
-      "dpid": "00007600a03e1648",
+      "dpid": "0000e2c9abf32846",
       "host": [
         {
-          "address": "10.0.1.59",
+          "address": "10.0.0.9",
           "netmask": "255.255.255.0",
-          "port": 3
+          "port": 1
         }
       ]
     }
